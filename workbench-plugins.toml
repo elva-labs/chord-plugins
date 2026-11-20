@@ -22,3 +22,14 @@ build = ["npm", "run", "build"]
 tools = ["status", "commit", "log"]
 sections = ["Git", "Branches"]
 view = "full"
+
+[[plugin]]
+name = "github"
+path = "plugins/github"
+description = "A session's pull requests, with their checks and reviews, from gh."
+version = "0.1.0"
+run = ["node", "dist/main.js"]
+build = ["npm", "run", "build"]
+tools = []
+sections = ["Pull requests"]
+commands = ["gh pr create", "gh pr merge", "gh pr close", "gh pr ready"]

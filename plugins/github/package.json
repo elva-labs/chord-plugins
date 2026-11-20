@@ -1,0 +1,23 @@
+{
+  "name": "@elva-labs/workbench-plugin-github",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A session's pull requests, with their checks and reviews, from gh.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm install --prefix ../.. --no-audit --no-fund && npm run build --prefix ../.. --workspace @elva-labs/workbench-plugin && tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@elva-labs/workbench-plugin": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^5.0.0"
+  }
+}

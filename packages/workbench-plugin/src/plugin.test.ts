@@ -218,6 +218,8 @@ it("hands an action its row and its input, and sends the section again", async (
       row: { ...check, detail: "3 of 4" },
       input: { branch: "main" },
       project: "/srv/orbit-api",
+      session: null,
+      openUrl: expect.any(Function),
     },
   ]);
   expect(await line(3)).toEqual({
@@ -227,6 +229,221 @@ it("hands an action its row and its input, and sends the section again", async (
     project: "/srv/orbit-api",
     rows: [{ ...check, detail: "4 of 4" }],
     actions: [],
+  });
+  input.end();
+  await running;
+});
+
+it("sends a session's own section, and hands its actions the session and its row", async () => {
+  const { input, output, line, send } = streams();
+  const taken: ActionContext[] = [];
+  const asked: Array<{ project: string; session: string | null }> = [];
+  const p = plugin({ name: "github", version: "0.2.0" });
+  p.section("pull-request", {
+    title: "Pull requests",
+    actions: ({ session }) =>
+      session === null ? [] : [{ id: "refresh", label: "Refresh" }],
+    detail: ({ session }) => (session === null ? null : "this session"),
+    rows: (context) => {
+      asked.push(context);
+      return context.session === "6f2a" ? [check] : [];
+    },
+  });
+  p.action("pull-request", "open", (call) => {
+    taken.push(call);
+  });
+  const running = p.run({ input, output });
+  await line(0);
+
+  await p.refresh("pull-request", "/srv/orbit-api", "6f2a");
+  expect(await line(1)).toEqual({
+    type: "section",
+    id: "pull-request",
+    title: "Pull requests",
+    project: "/srv/orbit-api",
+    session: "6f2a",
+    rows: [check],
+    actions: [{ id: "refresh", label: "Refresh" }],
+    detail: "this session",
+  });
+
+  send({
+    type: "action",
+    id: "a7",
+    section: "pull-request",
+    action: "open",
+    row: "lint",
+    input: {},
+    project: "/srv/orbit-api",
+    session: "6f2a",
+  });
+  expect(await line(2)).toEqual({ type: "result", id: "a7" });
+  expect(taken[0]?.row).toEqual(check);
+  expect(taken[0]?.session).toBe("6f2a");
+  expect((await line(3)).session).toBe("6f2a");
+  expect(asked).toEqual([
+    { project: "/srv/orbit-api", session: "6f2a" },
+    { project: "/srv/orbit-api", session: "6f2a" },
+  ]);
+
+  send({
+    type: "action",
+    id: "a8",
+    section: "pull-request",
+    action: "open",
+    row: "lint",
+    input: {},
+    project: "/srv/orbit-api",
+  });
+  expect(await line(4)).toEqual({ type: "result", id: "a8" });
+  expect(taken[1]?.row).toBeNull();
+  expect(taken[1]?.session).toBeNull();
+  input.end();
+  await running;
+});
+
+it("forgets a session's rows once the session has ended", async () => {
+  const { input, output, line, send } = streams();
+  const taken: ActionContext[] = [];
+  const p = plugin({ name: "github", version: "0.2.0" });
+  p.section("pull-request", { title: "Pull requests", rows: () => [check] });
+  p.action("pull-request", "open", (call) => {
+    taken.push(call);
+  });
+  const running = p.run({ input, output });
+  await line(0);
+  await p.refresh("pull-request", "/srv/orbit-api", "6f2a");
+  await line(1);
+
+  send({
+    type: "session",
+    event: "ended",
+    id: "6f2a",
+    project: "/srv/orbit-api",
+  });
+  send({
+    type: "action",
+    id: "a7",
+    section: "pull-request",
+    action: "open",
+    row: "lint",
+    input: {},
+    project: "/srv/orbit-api",
+    session: "6f2a",
+  });
+  expect(await line(2)).toEqual({ type: "result", id: "a7" });
+  expect(taken[0]?.row).toBeNull();
+  input.end();
+  await running;
+});
+
+it("opens one web address for an action, before the action's result", async () => {
+  const { input, output, line, send, all } = streams();
+  const refused: string[] = [];
+  const p = plugin({ name: "github", version: "0.2.0" });
+  p.section("pull-request", { title: "Pull requests", rows: () => [] });
+  p.action("pull-request", "open", ({ openUrl }) => {
+    openUrl("https://github.com/acme/orbit-api/pull/42");
+    try {
+      openUrl("https://github.com/acme/orbit-api/pull/43");
+    } catch (error) {
+      refused.push(String(error));
+    }
+  });
+  p.action("pull-request", "bad", ({ openUrl }) => {
+    openUrl("file:///etc/passwd");
+  });
+  const running = p.run({ input, output });
+  await line(0);
+
+  send({
+    type: "action",
+    id: "a7",
+    section: "pull-request",
+    action: "open",
+    row: null,
+    input: {},
+    project: "/srv/orbit-api",
+  });
+  expect(await line(1)).toEqual({
+    type: "open_url",
+    project: "/srv/orbit-api",
+    action: "a7",
+    url: "https://github.com/acme/orbit-api/pull/42",
+  });
+  expect(await line(2)).toEqual({ type: "result", id: "a7" });
+  expect(refused).toHaveLength(1);
+
+  await line(3);
+  send({
+    type: "action",
+    id: "a8",
+    section: "pull-request",
+    action: "bad",
+    row: null,
+    input: {},
+    project: "/srv/orbit-api",
+  });
+  const answer = await line(4);
+  expect(answer.id).toBe("a8");
+  expect(answer.error).toMatch(/not a web address/);
+  expect(all.filter((said) => said.includes("open_url"))).toHaveLength(1);
+  input.end();
+  await running;
+});
+
+it("hands a heard command to the command listener", async () => {
+  const { input, output, line, send } = streams();
+  const heard: unknown[] = [];
+  const p = plugin({ name: "github", version: "0.2.0" });
+  p.on("command", (event) => heard.push(event));
+  const running = p.run({ input, output });
+  await line(0);
+
+  const command = {
+    type: "command",
+    project: "/srv/orbit-api",
+    session: "6f2a",
+    cwd: "/srv/orbit-api",
+    command: "gh pr create --fill",
+    ok: true,
+    output: "https://github.com/acme/orbit-api/pull/42\n",
+    truncated: false,
+    withheld: false,
+  };
+  send(command);
+  send({ type: "stop" });
+  await running;
+  expect(heard).toEqual([command]);
+});
+
+it("sends the mark the mark helper stands for, and takes it away", async () => {
+  const { input, output, line } = streams();
+  const p = plugin({ name: "github", version: "0.2.0" });
+  const running = p.run({ input, output });
+  await line(0);
+
+  p.mark("/srv/orbit-api", "6f2a", {
+    icon: "pull-request",
+    count: 2,
+    state: "failed",
+    label: "2 pull requests, a failing check",
+  });
+  p.mark("/srv/orbit-api", "6f2a", null);
+  expect(await line(1)).toEqual({
+    type: "mark",
+    project: "/srv/orbit-api",
+    session: "6f2a",
+    icon: "pull-request",
+    count: 2,
+    state: "failed",
+    label: "2 pull requests, a failing check",
+  });
+  expect(await line(2)).toEqual({
+    type: "mark",
+    project: "/srv/orbit-api",
+    session: "6f2a",
+    icon: null,
   });
   input.end();
   await running;

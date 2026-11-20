@@ -62,16 +62,32 @@ p.run();
   called. `detail` is asked alongside them for a short line beside the
   section's title, and a detail that is empty or that could not be found is
   a section with none. `folded: true` starts the section folded where the
-  app draws it as a group of its own.
+  app draws it as a group of its own. A row's `facts`, up to eight of
+  `{ label, text, state }`, make it a row that opens to list them.
+- `refresh(id, project, session)` sends a section for one session instead
+  of the whole project, which the app shows while that session is in front
+  in place of the project's section with the same id. The rows, the header
+  and the detail are asked with `{ project, session }`, the session null
+  for the project's own. A section with no rows, no actions and no detail
+  is taken away.
 - `action(section, action, handler)` registers what one of a section's
-  actions does. The handler is given the row it was taken on and the input
-  the app asked for, and the section is sent again once it is done.
+  actions does. The handler is given the row it was taken on, the input
+  the app asked for and the session whose section it was, or null, and the
+  section is sent again once it is done. `openUrl(url)` on what the handler
+  is given opens one http or https address in the user's browser for that
+  action, which is the only time the app opens one.
 - `on(event, handler)` listens for a project opening or closing, a session
   starting, changing state or ending, a tree that moved, a message from the
-  plugin's page, or the request to stop.
+  plugin's page, a command a session ran that the manifest's `commands`
+  asks to hear, or the request to stop. A session's event says the folder
+  it runs in, whether that is a worktree the app made for it and on which
+  branch, and the session that started it.
 - `open`, `diff`, `present` and `notify` show a place in the viewer, a
   file's diff, media, or a line on a session's row, the same means the
   agent has.
+- `mark(project, session, { icon, count, state, label })` puts the
+  plugin's one mark on a session's row, in place of the last one, and
+  `mark(project, session, null)` takes it away.
 - `view(project, { html, path, open })` sends the plugin's page for a
   project, written out or read from a file of the plugin's own directory,
   and `viewData(project, data)` sends that page a message while it is open.
