@@ -1,7 +1,7 @@
 {
   "name": "@elva-labs/workbench-plugin",
   "version": "0.1.0",
-  "description": "The protocol types and the loop an Agent Workbench plugin is written against.",
+  "description": "The protocol types and the loop a Chord plugin is written against.",
   "type": "module",
   "license": "MIT",
   "engines": {

@@ -1,6 +1,6 @@
 # Working in this repository
 
-This repository holds plugins for Agent Workbench and the package they are
+This repository holds plugins for Chord and the package they are
 written against. A plugin is a program that speaks JSON lines on stdin and
 stdout; the app runs one process per plugin on the machine the project is
 on. The app's own `docs/plugins.md` says what a plugin may declare and what
