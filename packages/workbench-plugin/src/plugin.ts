@@ -561,8 +561,8 @@ class Builder implements Plugin {
       opened = true;
       this.#write({
         type: "open_url",
-        id: call.id,
         project: call.project,
+        action: call.id,
         url,
       });
     };

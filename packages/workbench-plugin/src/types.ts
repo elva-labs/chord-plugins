@@ -100,7 +100,7 @@ export interface SessionEvent {
   state?: string;
   /** The folder the session runs in. */
   cwd?: string;
-  /** Whether `cwd` is a worktree the app made for this session. */
+  /** Whether `cwd` is a worktree the app made for this very session. */
   worktree?: boolean;
   /** The branch that worktree was made on, there only when `worktree` is
       true and the app knows it. */
@@ -119,14 +119,19 @@ export interface CommandEvent {
   session: string;
   /** The folder it ran in. */
   cwd: string;
-  /** What ran. */
+  /** The matched command's own words, from its program to its last
+      word, without the rest of the line it ran in. */
   command: string;
+  /** Whether the line it ran in succeeded. */
   ok: boolean;
-  /** The end of what it printed, at most 16 KiB, or null when the app
-      does not pass it on. */
+  /** The end of what the line printed, at most 16 KiB, or null when
+      another command in the line prints too. */
   output: string | null;
   /** Whether it printed more than `output` holds. */
   truncated: boolean;
+  /** Whether `output` is held back because another command in the line
+      prints too. */
+  withheld: boolean;
 }
 
 /** The tree of a project moved. */
@@ -277,12 +282,13 @@ export interface MarkLine {
   label?: string;
 }
 
-/** A web address to open in the user's browser, for the action whose id
-    it carries while that action waits for its result. */
+/** A web address to open in the user's browser, for the action it
+    answers while that action waits for its result. */
 export interface OpenUrlLine {
   type: "open_url";
-  id: string;
   project: string;
+  /** The id of the action it answers, as the action message gave it. */
+  action: string;
   url: string;
 }
 

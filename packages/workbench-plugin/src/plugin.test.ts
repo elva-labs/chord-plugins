@@ -367,8 +367,8 @@ it("opens one web address for an action, before the action's result", async () =
   });
   expect(await line(1)).toEqual({
     type: "open_url",
-    id: "a7",
     project: "/srv/orbit-api",
+    action: "a7",
     url: "https://github.com/acme/orbit-api/pull/42",
   });
   expect(await line(2)).toEqual({ type: "result", id: "a7" });
@@ -409,6 +409,7 @@ it("hands a heard command to the command listener", async () => {
     ok: true,
     output: "https://github.com/acme/orbit-api/pull/42\n",
     truncated: false,
+    withheld: false,
   };
   send(command);
   send({ type: "stop" });
