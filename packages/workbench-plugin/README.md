@@ -1,6 +1,6 @@
 # @elva-labs/workbench-plugin
 
-Agent Workbench runs a plugin as one process that speaks JSON lines over
+Chord runs a plugin as one process that speaks JSON lines over
 its standard input and output. This package holds the types for those
 lines and the loop that reads and writes them, so a plugin is a handler
 per name rather than a switch over a stream.
