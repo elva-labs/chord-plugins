@@ -31,6 +31,14 @@ export interface Action {
   input?: Field[];
 }
 
+/** One thing a row says about itself, listed under it when it opens: a
+    label, a line of text after it and a dot in a state. */
+export interface Fact {
+  label: string;
+  text?: string | null;
+  state?: RowState | null;
+}
+
 /** A line of a section, as the tree draws it. */
 export interface Row {
   id: string;
@@ -40,6 +48,8 @@ export interface Row {
   actions?: Action[];
   /** Which of the row's actions Enter runs. */
   default?: string;
+  /** Up to eight facts, which make the row one that opens. */
+  facts?: Fact[];
 }
 
 /** A tool the agent called, with the session that called it. */
@@ -60,6 +70,9 @@ export interface ActionCall {
   row: string | null;
   input: Record<string, string>;
   project: string;
+  /** The session whose section the action was on, and none on a
+      project's section. */
+  session?: string | null;
 }
 
 /** The app's greeting: its version, and the projects open on the machine. */
@@ -80,9 +93,40 @@ export interface ProjectEvent {
 export interface SessionEvent {
   type: "session";
   event: "started" | "ended" | "state";
+  /** The agent's own id for the session, which every other message names
+      it by. */
   id: string;
   project: string;
   state?: string;
+  /** The folder the session runs in. */
+  cwd?: string;
+  /** Whether `cwd` is a worktree the app made for this session. */
+  worktree?: boolean;
+  /** The branch that worktree was made on, there only when `worktree` is
+      true and the app knows it. */
+  branch?: string;
+  /** The session that started this one, while the window still knows
+      it. */
+  startedBy?: string;
+}
+
+/** A command a session ran that begins with one of the words the
+    plugin's manifest lists, once it has finished. */
+export interface CommandEvent {
+  type: "command";
+  project: string;
+  /** The agent's id for the session that ran it. */
+  session: string;
+  /** The folder it ran in. */
+  cwd: string;
+  /** What ran. */
+  command: string;
+  ok: boolean;
+  /** The end of what it printed, at most 16 KiB, or null when the app
+      does not pass it on. */
+  output: string | null;
+  /** Whether it printed more than `output` holds. */
+  truncated: boolean;
 }
 
 /** The tree of a project moved. */
@@ -111,6 +155,7 @@ export type AppMessage =
   | TreeEvent
   | StopEvent
   | ViewMessageEvent
+  | CommandEvent
   | ({ type: "tool" } & ToolCall)
   | ({ type: "action" } & ActionCall);
 
@@ -156,12 +201,14 @@ export interface Result {
   error?: string;
 }
 
-/** A section's rows for one project. */
+/** A section's rows for one project, or for one of its sessions. */
 export interface SectionLine {
   type: "section";
   id: string;
   title: string;
   project: string;
+  /** The session the section is for, and none for the whole project. */
+  session?: string;
   rows: Row[];
   actions: Action[];
   /** A short line drawn beside the section's title. */
@@ -205,6 +252,40 @@ export interface NotifyLine {
   session?: string;
 }
 
+/** The icons a mark can carry. */
+export type MarkIcon =
+  "pull-request" | "branch" | "issue" | "check" | "comment" | "dot";
+
+/** What a mark on a session's row says: an icon, a count, the state that
+    tints it and the words hovering it shows. */
+export interface Mark {
+  icon: MarkIcon;
+  count?: number;
+  state?: RowState | null;
+  label?: string;
+}
+
+/** The plugin's one mark on a session's row, or no icon to take it
+    away. */
+export interface MarkLine {
+  type: "mark";
+  project: string;
+  session: string;
+  icon: MarkIcon | null;
+  count?: number;
+  state?: RowState | null;
+  label?: string;
+}
+
+/** A web address to open in the user's browser, for the action whose id
+    it carries while that action waits for its result. */
+export interface OpenUrlLine {
+  type: "open_url";
+  id: string;
+  project: string;
+  url: string;
+}
+
 /** The plugin's page for one project, written out or read from a file of
     the plugin's own directory. */
 export interface ViewLine {
@@ -233,6 +314,8 @@ export type PluginMessage =
   | DiffLine
   | PresentLine
   | NotifyLine
+  | MarkLine
+  | OpenUrlLine
   | ViewLine
   | ViewDataLine;
 

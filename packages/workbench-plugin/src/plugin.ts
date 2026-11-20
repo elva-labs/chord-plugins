@@ -4,10 +4,12 @@ import type {
   Action,
   ActionCall,
   AppMessage,
+  CommandEvent,
   DeclaredSection,
   DeclaredTool,
   DiffOptions,
   Greeting,
+  Mark,
   OpenOptions,
   PluginMessage,
   PresentOptions,
@@ -51,29 +53,42 @@ export type ToolHandler = (
   context: ToolContext,
 ) => Promise<string | unknown> | string | unknown;
 
+/** Whom a section's rows are for: a project, and one of its sessions or
+    null for the whole project. */
+export interface SectionContext {
+  project: string;
+  session: string | null;
+}
+
 /** A section: its header, the actions on it, and the rows it draws. */
 export interface SectionOptions {
   title: string;
   /** The actions on the section's header. A function is asked each time
       the rows are sent, for a header that depends on what they hold. */
-  actions?: Action[] | ((context: { project: string }) => Action[]);
+  actions?: Action[] | ((context: SectionContext) => Action[]);
   /** A short line beside the section's title. It is asked each time the
       rows are sent, alongside them, and nothing is sent for a detail that
       is empty or that could not be found. */
-  detail?: (context: {
-    project: string;
-  }) => Promise<string | null> | string | null;
+  detail?: (context: SectionContext) => Promise<string | null> | string | null;
   /** Whether the section starts folded where the app draws it as a group
       of its own. */
   folded?: boolean;
-  rows: (context: { project: string }) => Promise<Row[]> | Row[];
+  rows: (context: SectionContext) => Promise<Row[]> | Row[];
 }
 
-/** The row an action was taken on, the input given, and the project. */
+/** The row an action was taken on, the input given, the project, and the
+    session whose section it was. */
 export interface ActionContext {
   row: Row | null;
   input: Record<string, string>;
   project: string;
+  /** The session whose section the action was on, or null on a project's
+      section. */
+  session: string | null;
+  /** Opens a web address in the user's browser, once per action and only
+      while the handler runs. An address that is not http or https is
+      refused. */
+  openUrl(url: string): void;
 }
 
 /** An action's handler. What it throws is shown to the user. */
@@ -83,6 +98,7 @@ export type ActionHandler = (call: ActionContext) => Promise<void> | void;
 export interface Events {
   project: ProjectEvent;
   session: SessionEvent;
+  command: CommandEvent;
   tree: TreeEvent;
   stop: StopEvent;
   view_message: ViewMessageEvent;
@@ -107,8 +123,13 @@ export interface Plugin {
     event: K,
     handler: (event: Events[K]) => unknown,
   ): Plugin;
-  /** Computes a section's rows for a project and sends them. */
-  refresh(section: string, project: string): Promise<void>;
+  /** Computes a section's rows for a project, or for one of its sessions,
+      and sends them. */
+  refresh(
+    section: string,
+    project: string,
+    session?: string | null,
+  ): Promise<void>;
   /** Opens a place in the viewer. */
   open(project: string, place: OpenOptions): void;
   /** Shows a file's diff. */
@@ -117,6 +138,9 @@ export interface Plugin {
   present(project: string, media: PresentOptions): void;
   /** Puts a line on a session's row. */
   notify(project: string, text: string, session?: string): void;
+  /** Puts the plugin's one mark on a session's row, in place of the last
+      one, or takes it away when the mark is null. */
+  mark(project: string, session: string, mark: Mark | null): void;
   /** Sends the plugin's page for a project, which stands until the next
       one. Only a page the user asked for is sent open. */
   view(project: string, page: ViewOptions): void;
@@ -132,21 +156,45 @@ const ANY_OBJECT: Record<string, unknown> = { type: "object", properties: {} };
 /** A name is a plain identifier, the same one the app accepts. */
 const NAME = /^[a-z][a-z0-9_-]*$/;
 
+/** The longest web address the app opens. */
+const URL_MAX = 2048;
+
 /** A section's header actions: the list it was registered with, or what
     the function it was registered with says for this project. */
-function headerOf(section: Section, project: string): Action[] {
+function headerOf(section: Section, context: SectionContext): Action[] {
   const actions = section.actions;
-  return typeof actions === "function" ? actions({ project }) : actions;
+  return typeof actions === "function" ? actions(context) : actions;
 }
 
 /** A section's detail for a project, and an empty line for a section
     with none and for one whose detail could not be found. */
-async function detailOf(section: Section, project: string): Promise<string> {
+async function detailOf(
+  section: Section,
+  context: SectionContext,
+): Promise<string> {
   if (section.detail === undefined) return "";
   try {
-    return (await section.detail({ project })) ?? "";
+    return (await section.detail(context)) ?? "";
   } catch {
     return "";
+  }
+}
+
+/** Where a section's last rows are kept: the project, and the session
+    after it when there is one. */
+function keyOf(project: string, session: string | null): string {
+  return session === null ? project : `${project}\u0000${session}`;
+}
+
+/** Whether a web address is one the app opens: http or https, no longer
+    than it allows, with no white space. */
+function openable(url: string): boolean {
+  if (url.length > URL_MAX || /\s/.test(url)) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
   }
 }
 
@@ -198,7 +246,8 @@ class Builder implements Plugin {
   readonly #listeners = new Map<string, Array<(event: never) => unknown>>();
   /** The projects open on the machine, as the app has told it. */
   readonly #projects = new Set<string>();
-  /** The rows each section last sent, so an action knows its row. */
+  /** The rows each section last sent, by project and session, so an
+      action knows its row. */
   readonly #rows = new Map<string, Map<string, Row[]>>();
   #output: Writable | null = null;
   #stop: (() => void) | null = null;
@@ -272,28 +321,34 @@ class Builder implements Plugin {
     return this;
   }
 
-  async refresh(section: string, project: string): Promise<void> {
+  async refresh(
+    section: string,
+    project: string,
+    session: string | null = null,
+  ): Promise<void> {
     const registered = this.#sections.get(section);
     if (!registered || project === "") return;
+    const context: SectionContext = { project, session: session || null };
     // The detail is found while the rows are.
-    const said = detailOf(registered, project);
+    const said = detailOf(registered, context);
     let rows: Row[];
     try {
-      rows = (await registered.rows({ project })) ?? [];
+      rows = (await registered.rows(context)) ?? [];
     } catch {
       return;
     }
     const detail = await said;
-    const byProject = this.#rows.get(section) ?? new Map<string, Row[]>();
-    byProject.set(project, rows);
-    this.#rows.set(section, byProject);
+    const kept = this.#rows.get(section) ?? new Map<string, Row[]>();
+    kept.set(keyOf(project, context.session), rows);
+    this.#rows.set(section, kept);
     this.#write({
       type: "section",
       id: section,
       title: registered.declared.title,
       project,
+      ...(context.session === null ? {} : { session: context.session }),
       rows,
-      actions: headerOf(registered, project),
+      actions: headerOf(registered, context),
       ...(detail === "" ? {} : { detail }),
       ...(registered.declared.folded === true ? { folded: true } : {}),
     });
@@ -318,6 +373,14 @@ class Builder implements Plugin {
       text,
       ...(session ? { session } : {}),
     });
+  }
+
+  mark(project: string, session: string, mark: Mark | null): void {
+    if (mark === null) {
+      this.#write({ type: "mark", project, session, icon: null });
+      return;
+    }
+    this.#write({ type: "mark", project, session, ...mark });
   }
 
   view(project: string, page: ViewOptions): void {
@@ -357,7 +420,7 @@ class Builder implements Plugin {
       tools: [...this.#tools.values()].map((tool) => tool.declared),
       sections: [...this.#sections.values()].map((section) => ({
         ...section.declared,
-        actions: headerOf(section, ""),
+        actions: headerOf(section, { project: "", session: null }),
       })),
       view: this.#view === null ? null : { width: this.#view },
     };
@@ -399,6 +462,11 @@ class Builder implements Plugin {
         await this.#project(message);
         return;
       case "session":
+        if (message.event === "ended")
+          this.#forget(message.project, message.id);
+        this.#emit("session", message);
+        return;
+      case "command":
       case "tree":
       case "view_message":
         this.#emit(message.type, message);
@@ -423,8 +491,12 @@ class Builder implements Plugin {
       this.#projects.add(event.path);
     } else {
       this.#projects.delete(event.path);
-      for (const byProject of this.#rows.values()) {
-        byProject.delete(event.path);
+      for (const kept of this.#rows.values()) {
+        for (const key of kept.keys()) {
+          if (key === event.path || key.startsWith(`${event.path}\u0000`)) {
+            kept.delete(key);
+          }
+        }
       }
     }
     this.#emit("project", event);
@@ -477,25 +549,59 @@ class Builder implements Plugin {
       });
       return;
     }
+    const session = call.session || null;
+    let answered = false;
+    let opened = false;
+    const openUrl = (url: string): void => {
+      if (answered) throw new Error("the action has already been answered");
+      if (opened) throw new Error("an action opens one web address");
+      if (!openable(url)) {
+        throw new Error(`not a web address the app opens: ${url}`);
+      }
+      opened = true;
+      this.#write({
+        type: "open_url",
+        id: call.id,
+        project: call.project,
+        url,
+      });
+    };
     try {
       await handler({
-        row: this.#rowOf(call.section, call.project, call.row),
+        row: this.#rowOf(call.section, call.project, session, call.row),
         input: call.input ?? {},
         project: call.project,
+        session,
+        openUrl,
       });
+      answered = true;
       this.#write({ type: "result", id: call.id });
     } catch (error) {
+      answered = true;
       this.#write({ type: "result", id: call.id, error: reason(error) });
     } finally {
-      await this.refresh(call.section, call.project);
+      await this.refresh(call.section, call.project, session);
     }
   }
 
   /** The row an action was taken on, as the section last sent it. */
-  #rowOf(section: string, project: string, id: string | null): Row | null {
+  #rowOf(
+    section: string,
+    project: string,
+    session: string | null,
+    id: string | null,
+  ): Row | null {
     if (!id) return null;
-    const rows = this.#rows.get(section)?.get(project) ?? [];
+    const rows = this.#rows.get(section)?.get(keyOf(project, session)) ?? [];
     return rows.find((row) => row.id === id) ?? null;
+  }
+
+  /** Lets go of the rows a session's sections last sent, once it has
+      ended and the app has let go of them too. */
+  #forget(project: string, session: string): void {
+    if (!session) return;
+    for (const kept of this.#rows.values())
+      kept.delete(keyOf(project, session));
   }
 
   #emit<K extends keyof Events>(event: K, message: Events[K]): void {
