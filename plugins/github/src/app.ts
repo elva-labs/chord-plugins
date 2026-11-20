@@ -294,6 +294,8 @@ export function detailOf(view: View): string | null {
         : `Rate limited on ${trouble.host} until ${timeOf(trouble.until)}.`;
     case "failed":
       return `gh failed on ${trouble.host}: ${trouble.text}`;
+    case "gone":
+      return `${trouble.host} cannot find ${trouble.repo}: it was deleted, or the account gh uses cannot see it. Try again once it can.`;
   }
 }
 

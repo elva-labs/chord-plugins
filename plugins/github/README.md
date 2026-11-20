@@ -28,7 +28,8 @@ empty unless something stands in the way of the session's pull requests;
 then it says what and how to fix it, and the header says Try again: `gh`
 not on the PATH, a host `gh` is not signed in to, with the `gh auth login
 --hostname` line to run, a rate limit on a host and the time of day it
-lifts, or, in a few words, what `gh` said when a call failed.
+lifts, a repository GitHub cannot find, or, in a few words, what `gh` said
+when a call failed.
 
 ## Whose pull requests
 
@@ -83,11 +84,16 @@ address, and a branch's is the one in the checkout's remote, given to `gh`
 as `--hostname` or `GH_HOST`. A branch is only looked up on a host `gh auth
 status` lists, so a remote on a host you never signed in to costs nothing.
 What `gh auth status` said holds for ten minutes, so signing in to a host
-is noticed within that, or at once on Refresh.
+is noticed within that, or at once on Refresh. While a worktree's remote is
+on a host `gh` is not signed in to, it is asked again every ten minutes, at
+most three times, and then not until Refresh.
 
 A repository that fails to read shows the failure only on the sessions with
-pull requests in it. One GitHub says it cannot find, because it was deleted
-or your access to it went, lets go of its claims and is not read again.
+pull requests in it. GitHub gives the same answer for a repository that was
+deleted and one the account `gh` uses cannot see, so one it cannot find
+keeps its claims: the sessions with pull requests in it say so, and it is
+not read again until Try again, Refresh or a restart, or until a session
+makes a pull request in it. Its claims go with the session, as all do.
 
 ## What it runs
 

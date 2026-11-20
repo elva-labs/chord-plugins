@@ -31,7 +31,10 @@ export type Trouble =
   | { kind: "missing" }
   | { kind: "signed-out"; host: string }
   | { kind: "limited"; host: string; until: number | null }
-  | { kind: "failed"; host: string; text: string };
+  | { kind: "failed"; host: string; text: string }
+  /** GitHub cannot find the repository, `owner/name`: it was deleted, or
+      the account gh uses cannot see it. */
+  | { kind: "gone"; host: string; repo: string };
 
 /** gh could not be started at all. */
 export class Missing extends Error {

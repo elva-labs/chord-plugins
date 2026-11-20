@@ -26,7 +26,7 @@ import type { Session } from "./mapping.js";
 import { BASE_MS } from "./schedule.js";
 import type { Tally } from "./standing.js";
 import { Store } from "./store.js";
-import { HOSTS_MS, SETTLE_MS, Watch } from "./watch.js";
+import { HOST_TRIES, HOSTS_MS, SETTLE_MS, Watch } from "./watch.js";
 
 const PROJECT = "/srv/orbit";
 const TREE = "/srv/orbit/.worktrees/retry-upload";
@@ -420,6 +420,33 @@ it("looks a branch up on another host only when gh says it is signed in there, a
   expect(asked()).toBe(3);
 });
 
+it("stops asking gh of its hosts for a made worktree on a host it is not signed in to after a few tries, until Refresh", async () => {
+  const listing = "remote.origin.url git@gitlab.example:platform/infra.git\n";
+  const at = watching(new Hub(), listing);
+  const tree = (id: string, cwd: string) =>
+    session({ id, cwd, worktree: true, branch: "retry-upload" });
+  const asked = () =>
+    at.gh.calls.filter((call) => call.args[0] === "auth").length;
+
+  await tell(at, tree("ada", TREE));
+  for (let at_ = 1; at_ < HOST_TRIES; at_++) {
+    expect(at.clock.waiting).toBe(1);
+    await at.clock.move(HOSTS_MS);
+  }
+  expect(asked()).toBe(HOST_TRIES);
+  expect(at.clock.waiting).toBe(0);
+
+  await at.clock.move(HOSTS_MS * 6);
+  await tell(at, tree("grace", `${TREE}-2`));
+  expect(asked()).toBe(HOST_TRIES);
+  expect(at.clock.waiting).toBe(0);
+  expect(at.reads()).toEqual([]);
+
+  await at.watch.refresh();
+  expect(asked()).toBe(HOST_TRIES + 1);
+  expect(at.clock.waiting).toBe(1);
+});
+
 it("says on the fold when gh is not signed in to a host, with the command to run", async () => {
   const hub = new Hub();
   hub.other = (call) => (call.args[0] === "api" ? failed("", 4) : undefined);
@@ -623,40 +650,78 @@ it("shows and tells a pull request only to the session that made it, not to the 
   expect(at.folds).toEqual(["child", "child"]);
 });
 
-it("lets go of the claims in a repository GitHub cannot find, and stops reading it", async () => {
+/** What GitHub answers for a repository that was deleted, and for one the
+    account gh uses cannot see. */
+const NOT_FOUND: Run = {
+  code: 1,
+  stderr:
+    "GraphQL: Could not resolve to a Repository with the name 'orbit/api'. (repository)",
+  stdout: JSON.stringify({
+    data: { repository: null },
+    errors: [
+      {
+        type: "NOT_FOUND",
+        path: ["repository"],
+        message: "Could not resolve to a Repository with the name 'orbit/api'.",
+      },
+    ],
+  }),
+};
+
+it("keeps the claims in a repository GitHub cannot find, and leaves it unread until Refresh", async () => {
   const hub = new Hub([{ number: 42 }]);
   const at = watching(hub);
   await at.watch.heard(created("ada"));
   expect(at.clock.waiting).toBe(1);
 
-  hub.other = (call) =>
-    call.args[0] === "api"
-      ? {
-          code: 1,
-          stderr:
-            "GraphQL: Could not resolve to a Repository with the name 'orbit/api'. (repository)",
-          stdout: JSON.stringify({
-            data: { repository: null },
-            errors: [
-              {
-                type: "NOT_FOUND",
-                path: ["repository"],
-                message:
-                  "Could not resolve to a Repository with the name 'orbit/api'.",
-              },
-            ],
-          }),
-        }
-      : undefined;
+  hub.other = (call) => (call.args[0] === "api" ? NOT_FOUND : undefined);
   await at.watch.refresh();
 
-  expect(at.store.claims().size).toBe(0);
-  expect(at.watch.viewOf("ada")).toEqual({ lines: [], trouble: null });
+  expect(at.watch.viewOf("ada").lines).toEqual([]);
+  expect(at.detail("ada")).toBe(
+    "github.com cannot find orbit/api: it was deleted, or the account gh uses cannot see it. Try again once it can.",
+  );
+  expect(headerOf(at.watch.viewOf("ada"))).toEqual([
+    { id: "refresh", label: "Try again" },
+  ]);
   expect(at.marks.at(-1)).toEqual(["ada", null]);
   expect(at.clock.waiting).toBe(0);
+  expect(at.store.claims()).toEqual(new Map([["ada", [KEY]]]));
   const again = new Store(at.path);
   await again.load(at.clock.now());
-  expect(again.claims().size).toBe(0);
+  expect(again.claims()).toEqual(new Map([["ada", [KEY]]]));
+
+  const reads = at.reads().length;
+  await tell(at, session({ id: "grace" }));
+  expect(at.reads()).toHaveLength(reads);
+
+  hub.other = null;
+  await at.watch.refresh();
+
+  expect(at.reads()).toHaveLength(reads + 1);
+  expect(at.watch.viewOf("ada").lines.map((line) => line.pull.key)).toEqual([
+    KEY,
+  ]);
+  expect(at.detail("ada")).toBeNull();
+  expect(at.notes).toEqual([]);
+  expect(at.clock.waiting).toBe(1);
+});
+
+it("reads a repository GitHub could not find again once a session makes a pull request in it", async () => {
+  const hub = new Hub([{ number: 42 }, { number: 43 }]);
+  const at = watching(hub);
+  await at.watch.heard(created("ada"));
+  hub.other = (call) => (call.args[0] === "api" ? NOT_FOUND : undefined);
+  await at.watch.refresh();
+  expect(at.watch.viewOf("ada").trouble?.kind).toBe("gone");
+
+  hub.other = null;
+  await at.watch.heard(created("ada", "https://github.com/orbit/api/pull/43"));
+
+  expect(at.watch.viewOf("ada").lines.map((line) => line.pull.number)).toEqual([
+    42, 43,
+  ]);
+  expect(at.detail("ada")).toBeNull();
 });
 
 it("says a repository failed only on the sessions with pull requests in it", async () => {

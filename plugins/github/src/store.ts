@@ -128,22 +128,6 @@ export class Store {
     return changed;
   }
 
-  /** Lets go of every claim in a repository, by its `repoKey`. Answers
-      whether anything changed. */
-  forget(repo: string): boolean {
-    let changed = false;
-    for (const [id, kept] of this.#sessions) {
-      const left = kept.pulls.filter(
-        (claim) => !claim.key.startsWith(`${repo}#`),
-      );
-      if (left.length === kept.pulls.length) continue;
-      changed = true;
-      kept.pulls = left;
-      if (left.length === 0) this.#sessions.delete(id);
-    }
-    return changed;
-  }
-
   /** Lets go of what is past keeping. */
   prune(now: number): void {
     for (const [id, kept] of this.#sessions) {

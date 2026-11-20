@@ -86,6 +86,11 @@ export const LIMITED_MAX_MS = 30 * 60_000;
 /** How long what gh said of the hosts it is signed in to holds. */
 export const HOSTS_MS = 10 * 60_000;
 
+/** How many times gh is asked of its hosts while a made worktree's
+    remote is on a host it is not signed in to, before it is asked no more
+    until Refresh. */
+export const HOST_TRIES = 3;
+
 /** How new a pull request found by looking must be for a `gh pr create`
     whose output was held back to claim it. */
 export const MADE_MS = 10 * 60_000;
@@ -132,6 +137,13 @@ export class Watch {
       null before it said. */
   #hosts: Set<string> | null = null;
   #hostsAt = 0;
+  /** How many times gh was asked of its hosts, and how many of the reads
+      in a row that asked found a wanted branch on a host not among them. */
+  #hostAsks = 0;
+  #hostTries = 0;
+  /** The repositories GitHub could not find, by `repoKey`, left unread
+      until Refresh. Their claims stay on disk. */
+  readonly #gone = new Map<string, Trouble>();
   readonly #seen = new Map<string, Seen>();
   readonly #folds = new Map<string, string>();
   readonly #marks = new Map<string, string>();
@@ -209,10 +221,13 @@ export class Watch {
   }
 
   /** Reads everything again at once, asking gh again which hosts it is
-      signed in to, and reading a rate-limited host too. */
+      signed in to, and reading a rate-limited host and a repository GitHub
+      could not find too. */
   async refresh(): Promise<void> {
     this.#hosts = null;
+    this.#hostTries = 0;
     this.#paused.clear();
+    this.#gone.clear();
     this.#places.clear();
     await this.schedule.now();
   }
@@ -294,6 +309,8 @@ export class Watch {
     if (ref === null) return;
     const now = this.#clock.now();
     const key = pullKey(ref);
+    // gh just saw the repository it made the pull request in.
+    this.#gone.delete(repoKey(ref));
     if (!take) {
       const others = owners(this.#world(now), key);
       if (others.some((id) => id !== heard.session)) return;
@@ -347,6 +364,7 @@ export class Watch {
     const branches = [];
     let signed: ReadonlySet<string> | null = null;
     let unsigned = false;
+    const asked = this.#hostAsks;
     for (const one of want.branches) {
       const host = one.repo.host;
       if (!obvious(host) && !claimed.has(host)) {
@@ -358,10 +376,17 @@ export class Watch {
       }
       branches.push(one);
     }
+    if (!unsigned) this.#hostTries = 0;
+    else if (this.#hostAsks > asked) this.#hostTries += 1;
 
     const troubles = new Map<string, Trouble>();
     const asks: Ask[] = [];
     for (const ask of asksOf(want.refs, branches)) {
+      const gone = this.#gone.get(repoKey(ask));
+      if (gone !== undefined) {
+        troubles.set(repoKey(ask), gone);
+        continue;
+      }
       const pause = this.#paused.get(ask.host);
       if (pause !== undefined && pause.until > now) {
         troubles.set(repoKey(ask), {
@@ -396,7 +421,14 @@ export class Watch {
     answers.forEach((answer, at) => {
       const ask = asks[at] as Ask;
       if ("gone" in answer) {
-        if (this.#gone(ask)) saving = true;
+        const trouble: Trouble = {
+          kind: "gone",
+          host: ask.host,
+          repo: `${ask.owner}/${ask.name}`,
+        };
+        this.#lose(ask);
+        this.#gone.set(repoKey(ask), trouble);
+        troubles.set(repoKey(ask), trouble);
         return;
       }
       if ("trouble" in answer) {
@@ -445,11 +477,11 @@ export class Watch {
 
     // A paused host is read again when its pause ends, and a branch on a
     // host gh is not signed in to is looked for again once what gh said
-    // of its hosts no longer holds.
+    // of its hosts no longer holds, until gh was asked HOST_TRIES times.
     const wakes = [...this.#paused.values()]
       .map((pause) => pause.until)
       .filter((until) => until > now);
-    if (unsigned) {
+    if (unsigned && this.#hostTries < HOST_TRIES) {
       wakes.push((this.#hosts === null ? now : this.#hostsAt) + HOSTS_MS);
     }
     const wake = wakes.length === 0 ? null : Math.min(...wakes);
@@ -478,9 +510,9 @@ export class Watch {
     return pause.until;
   }
 
-  /** Lets go of a repository that is not there any more: its claims and
-      everything read from it. Answers whether a claim went. */
-  #gone(ask: Ask): boolean {
+  /** Lets go of everything read from a repository GitHub could not find.
+      What sessions claimed in it stays theirs. */
+  #lose(ask: Ask): void {
     const repo = repoKey(ask);
     for (const key of [...this.#pulls.keys()]) {
       if (!key.startsWith(`${repo}#`)) continue;
@@ -490,7 +522,6 @@ export class Watch {
     for (const branch of ask.branches) {
       this.#branches.delete(branchKey(ask, branch));
     }
-    return this.#store.forget(repo);
   }
 
   /** Takes in what a repository answered besides its pull requests. */
@@ -523,11 +554,15 @@ export class Watch {
    * hosts of claimed pull requests is looked up, so a folder whose remote
    * is elsewhere is never asked of GitHub. What gh said holds for
    * HOSTS_MS; when it could not say, it is asked again on the next read.
+   * Once it was asked HOST_TRIES times and a wanted branch was on a host it
+   * did not list, what it said last holds until Refresh.
    */
   async #signedIn(now: number): Promise<ReadonlySet<string>> {
     if (this.#hosts !== null && now - this.#hostsAt < HOSTS_MS) {
       return this.#hosts;
     }
+    if (this.#hostTries >= HOST_TRIES) return this.#hosts ?? new Set();
+    this.#hostAsks += 1;
     let hosts: unknown;
     try {
       const run = await this.#gh(["auth", "status", "--json", "hosts"]);

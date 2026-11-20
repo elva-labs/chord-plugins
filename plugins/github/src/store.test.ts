@@ -71,27 +71,6 @@ it("moves a pull request to a session that takes it, from one that holds it with
   expect(store.claims()).toEqual(new Map([["maker", [A42, A41]]]));
 });
 
-it("lets go of every pull request in a repository, and of a session left with none", () => {
-  const store = new Store(path);
-  const WEB = "github.com/orbit/web#3";
-  const API2 = "github.com/orbit/api2#5";
-  store.claim("s1", A41, NOW, true);
-  store.claim("s1", WEB, NOW, true);
-  store.claim("s2", A42, NOW, true);
-  store.claim("s2", API2, NOW, true);
-
-  expect(store.forget("github.com/orbit/api")).toBe(true);
-  expect(store.forget("github.com/orbit/api")).toBe(false);
-  expect(store.claims()).toEqual(
-    new Map([
-      ["s1", [WEB]],
-      ["s2", [API2]],
-    ]),
-  );
-  store.forget("github.com/orbit/web");
-  expect(store.claims().has("s1")).toBe(false);
-});
-
 it("lists a session's pull requests newest first", () => {
   const store = new Store(path);
   store.claim("s1", A41, NOW, true);
