@@ -1,8 +1,7 @@
 /**
  * What the tests stand in with: pull requests as the plugin keeps them,
  * GitHub's answers as gh prints them, a gh that answers from a script and
- * writes down every call, and a clock the test moves itself. gh itself is
- * never run.
+ * writes down every call, and a clock the test moves itself.
  */
 
 import { pullKey, type Repo } from "./address.js";
@@ -52,7 +51,6 @@ export function session(over: Partial<Session> & { id: string }): Session {
     cwd: "/srv/orbit",
     worktree: false,
     branch: null,
-    startedBy: null,
     ...over,
   };
 }
@@ -63,7 +61,8 @@ export interface Ran {
   status?: string;
   conclusion?: string | null;
   workflow?: string;
-  startedAt?: string;
+  /** Null for a run that has not started. */
+  startedAt?: string | null;
 }
 
 /** A pull request as GitHub's answer holds it. */
@@ -82,6 +81,10 @@ export interface Node {
   mergedAt?: string | null;
   headRepository?: { name: string; owner: { login: string } } | null;
   checks?: Ran[];
+  /** GitHub's state of every check together. */
+  rollup?: string;
+  /** How many checks there are, when more than are given. */
+  total?: number;
   statuses?: { context: string; state: string; createdAt?: string }[];
   reviews?: {
     login: string;
@@ -139,7 +142,11 @@ export function node(given: Node): Record<string, unknown> {
         {
           commit: {
             statusCheckRollup: {
+              state: given.rollup ?? "SUCCESS",
               contexts: {
+                totalCount:
+                  given.total ??
+                  (given.checks ?? []).length + (given.statuses ?? []).length,
                 nodes: [
                   ...(given.checks ?? []).map((one) => ({
                     __typename: "CheckRun",
@@ -147,7 +154,10 @@ export function node(given: Node): Record<string, unknown> {
                     status: one.status ?? "COMPLETED",
                     conclusion:
                       one.conclusion === undefined ? "SUCCESS" : one.conclusion,
-                    startedAt: one.startedAt ?? "2026-11-20T10:00:00Z",
+                    startedAt:
+                      one.startedAt === undefined
+                        ? "2026-11-20T10:00:00Z"
+                        : one.startedAt,
                     completedAt: null,
                     checkSuite: one.workflow
                       ? { workflowRun: { workflow: { name: one.workflow } } }

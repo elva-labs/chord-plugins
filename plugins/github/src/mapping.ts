@@ -4,8 +4,8 @@
  * a claim, a session working in the worktree the app made for it also has
  * the pull requests whose head is its branch, from one of its folder's
  * remotes, in its folder's repository. A folder alone never makes one
- * anyone's. A session that started others shows theirs too, each marked
- * with whose it is.
+ * anyone's, and a pull request shows only for the sessions it is the own
+ * of, never for the session that started them.
  */
 
 import { repoKey, refOfKey, type PullRef, type Repo } from "./address.js";
@@ -21,8 +21,6 @@ export interface Session {
   worktree: boolean;
   /** The worktree's branch, when the app knows it. */
   branch: string | null;
-  /** The session that started this one, while it is known. */
-  startedBy: string | null;
 }
 
 /** How long a merged or closed pull request is still shown. */
@@ -41,13 +39,6 @@ export interface World {
   /** The keys found for a branch, by `branchKey`. */
   branches: ReadonlyMap<string, readonly string[]>;
   now: number;
-}
-
-/** A pull request shown for a session, and the session it came from when
-    that is one the session started rather than the session itself. */
-export interface Owned {
-  key: string;
-  from: string | null;
 }
 
 /** The key of a branch in a repository. */
@@ -72,7 +63,7 @@ export function current(world: World, key: string): boolean {
 }
 
 /** The pull requests that are the session's own, claims first. */
-export function direct(world: World, id: string): string[] {
+export function owned(world: World, id: string): string[] {
   const own: string[] = [];
   const add = (key: string): void => {
     if (!own.includes(key) && current(world, key)) own.push(key);
@@ -97,46 +88,10 @@ export function direct(world: World, id: string): string[] {
   return own;
 }
 
-/** The sessions a session started, and the ones they started, nearest
-    first. */
-export function descendants(world: World, id: string): string[] {
-  const found: string[] = [];
-  const seen = new Set([id]);
-  let ring = [id];
-  while (ring.length > 0) {
-    const next: string[] = [];
-    for (const parent of ring) {
-      for (const session of world.sessions.values()) {
-        if (session.startedBy !== parent || seen.has(session.id)) continue;
-        seen.add(session.id);
-        found.push(session.id);
-        next.push(session.id);
-      }
-    }
-    ring = next;
-  }
-  return found;
-}
-
-/** Every pull request shown for a session: its own, then those of the
-    sessions it started. */
-export function shown(world: World, id: string): Owned[] {
-  const owned: Owned[] = direct(world, id).map((key) => ({ key, from: null }));
-  const had = new Set(owned.map((one) => one.key));
-  for (const child of descendants(world, id)) {
-    for (const key of direct(world, child)) {
-      if (had.has(key)) continue;
-      had.add(key);
-      owned.push({ key, from: child });
-    }
-  }
-  return owned;
-}
-
-/** The sessions a pull request is directly the session's own of. */
+/** The sessions a pull request is the own of. */
 export function owners(world: World, key: string): string[] {
   return [...world.sessions.keys()].filter((id) =>
-    direct(world, id).includes(key),
+    owned(world, id).includes(key),
   );
 }
 

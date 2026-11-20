@@ -11,13 +11,21 @@ import {
   REPO,
 } from "./fake.test-helper.js";
 import { Missing } from "./gh.js";
-import { asksOf, bucketOf, queryOf, readRepo, type Read } from "./pulls.js";
+import {
+  asksOf,
+  bucketOf,
+  queryOf,
+  readRepo,
+  UNREAD,
+  type Read,
+} from "./pulls.js";
 
 const WEB = { host: "github.com", owner: "orbit", name: "web" };
 const INFRA = { host: "ghe.corp.example", owner: "platform", name: "infra" };
 
 function read(value: Awaited<ReturnType<typeof readRepo>>): Read {
   if ("trouble" in value) throw new Error(`trouble: ${value.trouble.kind}`);
+  if ("gone" in value) throw new Error("gone");
   return value;
 }
 
@@ -176,6 +184,75 @@ it("keeps only the newest run of a check that ran again", () => {
   );
 });
 
+it("takes a re-run that has not started over the run it replaces", async () => {
+  const gh = fakeGh(() =>
+    ok(
+      answer({
+        numbers: [
+          node({
+            number: 41,
+            checks: [
+              {
+                name: "test",
+                conclusion: "FAILURE",
+                startedAt: "2026-11-20T09:00:00Z",
+              },
+              {
+                name: "test",
+                status: "QUEUED",
+                conclusion: null,
+                startedAt: null,
+              },
+            ],
+          }),
+        ],
+      }),
+    ),
+  );
+
+  const found = read(
+    await readRepo(gh, { ...REPO, numbers: [41], branches: [] }),
+  );
+
+  expect(found.pulls.get("github.com/orbit/api#41")?.checks).toEqual([
+    { name: "test", bucket: "pending" },
+  ]);
+});
+
+it("lets GitHub's state of all the checks stand for those past the ones read", async () => {
+  const many = (rollup: string) =>
+    fakeGh(() =>
+      ok(
+        answer({
+          numbers: [
+            node({
+              number: 41,
+              checks: [{ name: "build" }],
+              rollup,
+              total: 140,
+            }),
+          ],
+        }),
+      ),
+    );
+  const checksOf = async (rollup: string) =>
+    read(
+      await readRepo(many(rollup), { ...REPO, numbers: [41], branches: [] }),
+    ).pulls.get("github.com/orbit/api#41")?.checks;
+
+  expect(await checksOf("FAILURE")).toEqual([
+    { name: "build", bucket: "pass" },
+    { name: UNREAD, bucket: "fail" },
+  ]);
+  expect(await checksOf("PENDING")).toEqual([
+    { name: "build", bucket: "pass" },
+    { name: UNREAD, bucket: "pending" },
+  ]);
+  expect(await checksOf("SUCCESS")).toEqual([
+    { name: "build", bucket: "pass" },
+  ]);
+});
+
 it("reads when a pull request was merged or closed, and a head that is gone", async () => {
   const gh = fakeGh(() =>
     ok(
@@ -278,12 +355,14 @@ it("says a host is rate limited, and until when when GitHub says", async () => {
   ).toEqual({ trouble: { kind: "limited", host: "github.com", until: null } });
 });
 
-it("says what GitHub said when a repository cannot be read", async () => {
-  const gone = fakeGh(() => ({
+it("says a repository is gone when GitHub cannot find it", async () => {
+  const gh = fakeGh(() => ({
     stdout: JSON.stringify({
       data: { repository: null },
       errors: [
         {
+          type: "NOT_FOUND",
+          path: ["repository"],
           message:
             "Could not resolve to a Repository with the name 'orbit/api'.",
         },
@@ -292,17 +371,37 @@ it("says what GitHub said when a repository cannot be read", async () => {
     stderr: "",
     code: 1,
   }));
+
+  expect(await readRepo(gh, { ...REPO, numbers: [1], branches: [] })).toEqual({
+    gone: true,
+  });
+});
+
+it("says what GitHub said when a repository cannot be read", async () => {
+  const refused = fakeGh(() => ({
+    stdout: JSON.stringify({
+      data: { repository: null },
+      errors: [
+        {
+          type: "FORBIDDEN",
+          message: "Resource protected by organization SAML enforcement.",
+        },
+      ],
+    }),
+    stderr: "",
+    code: 1,
+  }));
   const nothing = fakeGh(() => ok(""));
 
-  expect(await readRepo(gone, { ...REPO, numbers: [1], branches: [] })).toEqual(
-    {
-      trouble: {
-        kind: "failed",
-        host: "github.com",
-        text: "Could not resolve to a Repository with the name 'orbit/api'.",
-      },
+  expect(
+    await readRepo(refused, { ...REPO, numbers: [1], branches: [] }),
+  ).toEqual({
+    trouble: {
+      kind: "failed",
+      host: "github.com",
+      text: "Resource protected by organization SAML enforcement.",
     },
-  );
+  });
   expect(
     await readRepo(nothing, { ...REPO, numbers: [1], branches: [] }),
   ).toMatchObject({ trouble: { kind: "failed", host: "github.com" } });

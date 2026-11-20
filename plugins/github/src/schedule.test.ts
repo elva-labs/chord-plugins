@@ -1,20 +1,8 @@
 import { expect, it } from "vitest";
 import { FakeClock, settle } from "./fake.test-helper.js";
-import {
-  BASE_MS,
-  LIMITED_MAX_MS,
-  LIMITED_MS,
-  MAX_MS,
-  Schedule,
-  type Outcome,
-} from "./schedule.js";
+import { BASE_MS, MAX_MS, Schedule, type Outcome } from "./schedule.js";
 
-const QUIET: Outcome = {
-  watching: true,
-  changed: false,
-  limited: false,
-  until: null,
-};
+const QUIET: Outcome = { watching: true, changed: false, wake: null };
 
 /** A schedule whose reads answer from a list, the last answer repeating,
     and the times it read at. */
@@ -103,54 +91,45 @@ it("reads at once when asked, and waits a minute after that", async () => {
   expect(clock.next).toBe(clock.now() + BASE_MS);
 });
 
-it("waits for a rate limit to lift when GitHub says when", async () => {
+it("reads when a waiting host's limit lifts, sooner than the timer would", async () => {
   const { clock, schedule, reads } = scheduled([
-    { ...QUIET, limited: true, until: Date.parse("2026-11-20T10:42:00Z") },
+    { ...QUIET, wake: Date.parse("2026-11-20T10:30:20Z") },
     QUIET,
   ]);
 
   await schedule.now();
 
-  expect(clock.next).toBe(Date.parse("2026-11-20T10:42:01Z"));
-  await clock.move(12 * 60_000);
-  expect(reads).toHaveLength(1);
-  await clock.move(1_000);
+  expect(clock.next).toBe(Date.parse("2026-11-20T10:30:20Z"));
+  await clock.move(20_000);
   expect(reads).toHaveLength(2);
+});
+
+it("keeps to the timer while a waiting host's limit lifts later", async () => {
+  const { clock, schedule } = scheduled([
+    { ...QUIET, wake: Date.parse("2026-11-20T11:00:00Z") },
+  ]);
+
+  await schedule.now();
+
   expect(clock.next).toBe(clock.now() + BASE_MS);
 });
 
-it("waits no more than half an hour for a rate limit, even when told longer", async () => {
-  const { clock, schedule } = scheduled([
-    { ...QUIET, limited: true, until: Date.parse("2026-11-20T13:00:00Z") },
+it("reads when a host's limit lifts though nothing open is watched", async () => {
+  const { clock, schedule, reads } = scheduled([
+    {
+      watching: false,
+      changed: false,
+      wake: Date.parse("2026-11-20T10:42:00Z"),
+    },
+    { ...QUIET, watching: false },
   ]);
 
   await schedule.now();
 
-  expect(clock.next).toBe(clock.now() + LIMITED_MAX_MS);
-});
-
-it("waits longer each time a rate limit holds without saying when", async () => {
-  const limited = { ...QUIET, limited: true };
-  const { clock, schedule, gaps } = scheduled([
-    limited,
-    limited,
-    limited,
-    limited,
-    limited,
-    QUIET,
-  ]);
-
-  await schedule.now();
-  await clock.move(LIMITED_MS * (1 + 2 + 4) + LIMITED_MAX_MS * 2 + BASE_MS);
-
-  expect(gaps()).toEqual([
-    LIMITED_MS,
-    LIMITED_MS * 2,
-    LIMITED_MS * 4,
-    LIMITED_MAX_MS,
-    LIMITED_MAX_MS,
-    BASE_MS,
-  ]);
+  expect(clock.next).toBe(Date.parse("2026-11-20T10:42:00Z"));
+  await clock.move(12 * 60_000);
+  expect(reads).toHaveLength(2);
+  expect(clock.waiting).toBe(0);
 });
 
 it("reads once more after a read that was running when asked", async () => {

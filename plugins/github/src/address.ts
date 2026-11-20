@@ -257,9 +257,22 @@ function read(words: string[], depth: number): Words | null {
   return null;
 }
 
+/**
+ * The words after a verb, read the way gh reads its flags: `--name value`
+ * or `--name=value`, and short flags that may stand together, the last
+ * one taking its value from the rest of the word (`-Hfix`, `-H=fix`,
+ * `-dHfix`) or from the next word.
+ */
 function args(verb: Verb, rest: string[]): Words {
   const found: Words = { verb, target: null, repo: null, head: null };
   const valued = VALUED[verb];
+  const take = (name: string, value: string): void => {
+    if (value === "") return;
+    if (name === "-R" || name === "--repo") found.repo = value;
+    if (verb === "create" && (name === "-H" || name === "--head")) {
+      found.head = value;
+    }
+  };
   for (let at = 0; at < rest.length; at++) {
     const word = rest[at] as string;
     if (OPERATORS.has(word)) break;
@@ -269,20 +282,31 @@ function args(verb: Verb, rest: string[]): Words {
         found.target = next;
       break;
     }
-    if (word.startsWith("-") && word !== "-") {
+    if (word.startsWith("--")) {
       const equals = word.indexOf("=");
-      const name = equals === -1 ? word : word.slice(0, equals);
-      let value: string | null = null;
       if (equals !== -1) {
-        value = word.slice(equals + 1);
-      } else if (valued.has(name)) {
-        value = rest[at + 1] ?? null;
+        take(word.slice(0, equals), word.slice(equals + 1));
+      } else if (valued.has(word)) {
+        const value = rest[at + 1];
         at++;
+        if (value !== undefined) take(word, value);
       }
-      if (value === null) continue;
-      if (name === "-R" || name === "--repo") found.repo = value;
-      if (verb === "create" && (name === "-H" || name === "--head")) {
-        found.head = value;
+      continue;
+    }
+    if (word.startsWith("-") && word !== "-") {
+      for (let char = 1; char < word.length; char++) {
+        const name = `-${word[char]}`;
+        if (!valued.has(name)) continue;
+        let value = word.slice(char + 1);
+        if (value.startsWith("=")) value = value.slice(1);
+        if (value === "" && char + 1 === word.length) {
+          const next = rest[at + 1];
+          at++;
+          if (next !== undefined) take(name, next);
+        } else {
+          take(name, value);
+        }
+        break;
       }
       continue;
     }

@@ -14,10 +14,11 @@ import {
   rowId,
   rowsOf,
   sessionOf,
+  timeOf,
   type Line,
   type View,
 } from "./app.js";
-import { pull, session } from "./fake.test-helper.js";
+import { pull } from "./fake.test-helper.js";
 import type { Check, Pull } from "./pulls.js";
 import {
   readyToMerge,
@@ -39,7 +40,7 @@ function review(who: string, state: string, at = NOW): Pull["reviews"][number] {
 }
 
 function line(over: Partial<Pull> = {}, more: Partial<Line> = {}): Line {
-  return { pull: pull(over), from: null, merge: null, ...more };
+  return { pull: pull(over), merge: null, ...more };
 }
 
 function view(lines: Line[], trouble: View["trouble"] = null): View {
@@ -154,23 +155,6 @@ it("names the repository on each row when the rows come from more than one", () 
   expect(rows.map((row) => row.detail)).toEqual([
     "api · retry-upload · ready to merge",
     "web · retry-upload · ready to merge",
-  ]);
-});
-
-it("marks a row that came from a session this one started, by its branch or folder", () => {
-  const rows = rowsOf(
-    view([
-      line({}, { from: session({ id: "c1", branch: "retry-upload" }) }),
-      line(
-        { number: 7 },
-        { from: session({ id: "c2", cwd: "/srv/orbit/web" }) },
-      ),
-    ]),
-  );
-
-  expect(rows.map((row) => row.detail)).toEqual([
-    "retry-upload · ready to merge · from retry-upload",
-    "retry-upload · ready to merge · from web",
   ]);
 });
 
@@ -368,35 +352,36 @@ it("heads the fold with Refresh, or Try again while something is in the way", ()
   ]);
 });
 
-it("says beside the title whose these are, or what is in the way and the command to run", () => {
-  expect(detailOf(view([]), NOW)).toBeNull();
-  expect(detailOf(view([line()]), NOW)).toBe("this session");
-  expect(detailOf(view([], { kind: "missing" }), NOW)).toBe(
+it("says nothing beside the title, unless something is in the way: then what, and the command to run", () => {
+  expect(detailOf(view([]))).toBeNull();
+  expect(detailOf(view([line()]))).toBeNull();
+  expect(detailOf(view([], { kind: "missing" }))).toBe(
     "gh is not on the PATH. Install the GitHub CLI (cli.github.com), then Try again.",
   );
   expect(
-    detailOf(view([], { kind: "signed-out", host: "ghe.corp.example" }), NOW),
+    detailOf(view([], { kind: "signed-out", host: "ghe.corp.example" })),
   ).toBe(
     "Not signed in to ghe.corp.example. Run gh auth login --hostname ghe.corp.example in a terminal, then Try again.",
   );
   expect(
     detailOf(
       view([], { kind: "limited", host: "github.com", until: NOW + 90_000 }),
-      NOW,
     ),
-  ).toBe("Rate limited on github.com, trying again in 2 min.");
+  ).toBe(`Rate limited on github.com until ${timeOf(NOW + 90_000)}.`);
   expect(
-    detailOf(
-      view([], { kind: "limited", host: "github.com", until: null }),
-      NOW,
-    ),
+    detailOf(view([], { kind: "limited", host: "github.com", until: null })),
   ).toBe("Rate limited on github.com, trying again in a few minutes.");
   expect(
     detailOf(
       view([], { kind: "failed", host: "github.com", text: "Bad credentials" }),
-      NOW,
     ),
   ).toBe("gh failed on github.com: Bad credentials");
+});
+
+it("writes a time of day as hours and minutes", () => {
+  const at = new Date(2026, 10, 20, 9, 5).getTime();
+
+  expect(timeOf(at)).toBe("09:05");
 });
 
 it("finds a pull request's key in its row's id, and nothing in another row's", () => {
@@ -425,7 +410,6 @@ it("reads a session as the app tells it", () => {
       cwd: "/srv/orbit",
       worktree: false,
       branch: null,
-      startedBy: null,
     },
   });
   expect(
@@ -444,7 +428,6 @@ it("reads a session as the app tells it", () => {
       cwd: "/srv/orbit/.worktrees/retry",
       worktree: true,
       branch: "retry-upload",
-      startedBy: "lead",
     },
   });
   expect(told({ branch: "retry-upload" })?.session.branch).toBeNull();

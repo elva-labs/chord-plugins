@@ -85,6 +85,13 @@ export interface Read {
 /** How many pull requests a branch is looked up for. */
 const PER_BRANCH = 5;
 
+/** How many of a head commit's checks are read. */
+export const CHECKS = 100;
+
+/** The name of a check past the first CHECKS, which stands in for those
+    not read when GitHub says one of them failed or is running. */
+export const UNREAD = `A check past the first ${CHECKS}`;
+
 const PULL = `fragment pull on PullRequest {
   number title url state isDraft headRefName headRefOid baseRefName
   mergeable mergeStateStatus reviewDecision closedAt mergedAt
@@ -100,12 +107,15 @@ const PULL = `fragment pull on PullRequest {
     state submittedAt
     author { login ... on User { name } }
   } }
-  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
-    __typename
-    ... on CheckRun { name status conclusion startedAt completedAt
-      checkSuite { workflowRun { workflow { name } } } }
-    ... on StatusContext { context state createdAt }
-  } } } } } }
+  commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: ${CHECKS}) {
+    totalCount
+    nodes {
+      __typename
+      ... on CheckRun { name status conclusion startedAt completedAt
+        checkSuite { workflowRun { workflow { name } } } }
+      ... on StatusContext { context state createdAt }
+    }
+  } } } } }
 }`;
 
 /** The query for one repository, and the variables it takes. */
@@ -141,12 +151,12 @@ ${PULL}`;
 }
 
 /** Reads what one repository holds of what is asked, or says what stood
-    in the way. A pull request that is not there is left out of the
-    answer; the rest still comes. */
+    in the way, or that the repository is not there. A pull request that
+    is not there is left out of the answer; the rest still comes. */
 export async function readRepo(
   run: Gh,
   ask: Ask,
-): Promise<Read | { trouble: Trouble }> {
+): Promise<Read | { trouble: Trouble } | { gone: true }> {
   const { fields } = queryOf(ask);
   let answer;
   try {
@@ -160,6 +170,7 @@ export async function readRepo(
   const parsed = parse(answer.stdout);
   const data = parsed?.data;
   if (!isObject(data) || !isObject(data.repository)) {
+    if (parsed !== null && gone(parsed)) return { gone: true };
     const trouble = troubleOf(
       answer.code === 0 ? { ...answer, code: 1 } : answer,
       ask.host,
@@ -299,10 +310,12 @@ export function bucketOf(state: string): Bucket {
   }
 }
 
-/** The head commit's checks, one per name, the newest of each. */
+/** The head commit's checks, one per name, the newest of each. A check
+    run that has not started yet is newer than any that has. Past the
+    first CHECKS, GitHub's state of them all stands in for the rest. */
 function checksOf(commits: unknown): Check[] {
-  const nodes = path(commits, ["nodes", 0, "commit", "statusCheckRollup"]);
-  const contexts = path(nodes, ["contexts", "nodes"]);
+  const rollup = path(commits, ["nodes", 0, "commit", "statusCheckRollup"]);
+  const contexts = path(rollup, ["contexts", "nodes"]);
   if (!Array.isArray(contexts)) return [];
   const newest = new Map<string, { at: number; check: Check }>();
   for (const context of contexts) {
@@ -322,7 +335,7 @@ function checksOf(commits: unknown): Check[] {
         context.status === "COMPLETED"
           ? text(context.conclusion)
           : text(context.status);
-      at = Date.parse(text(context.startedAt)) || 0;
+      at = Date.parse(text(context.startedAt)) || Number.POSITIVE_INFINITY;
     } else if (context.__typename === "StatusContext") {
       name = text(context.context);
       state = text(context.state);
@@ -335,7 +348,18 @@ function checksOf(commits: unknown): Check[] {
     if (had !== undefined && had.at > at) continue;
     newest.set(name, { at, check: { name, bucket: bucketOf(state) } });
   }
-  return [...newest.values()].map((one) => one.check);
+  const checks = [...newest.values()].map((one) => one.check);
+  const total = path(rollup, ["contexts", "totalCount"]);
+  if (typeof total !== "number" || total <= contexts.length) return checks;
+  const all = text(path(rollup, ["state"]));
+  const any = (...buckets: Bucket[]): boolean =>
+    checks.some((check) => buckets.includes(check.bucket));
+  if ((all === "FAILURE" || all === "ERROR") && !any("fail")) {
+    checks.push({ name: UNREAD, bucket: "fail" });
+  } else if ((all === "PENDING" || all === "EXPECTED") && !any("pending")) {
+    checks.push({ name: UNREAD, bucket: "pending" });
+  }
+  return checks;
 }
 
 function reviewsOf(latest: unknown): Review[] {
@@ -367,6 +391,18 @@ function askedOf(requests: unknown): string[] {
     if (name !== "") asked.push(name);
   }
   return asked;
+}
+
+/** Whether an answer says the repository itself is not there. */
+function gone(answer: Record<string, unknown>): boolean {
+  if (!Array.isArray(answer.errors)) return false;
+  return answer.errors.some(
+    (error) =>
+      isObject(error) &&
+      error.type === "NOT_FOUND" &&
+      Array.isArray(error.path) &&
+      error.path[0] === "repository",
+  );
 }
 
 /** What the errors of an answer say, as one line. */

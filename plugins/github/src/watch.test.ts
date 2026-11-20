@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { pullKey, type Repo } from "./address.js";
-import { detailOf, headerOf, rowsOf } from "./app.js";
+import { detailOf, headerOf, rowsOf, timeOf } from "./app.js";
 import {
   answer,
   branchesOf,
@@ -26,7 +26,7 @@ import type { Session } from "./mapping.js";
 import { BASE_MS } from "./schedule.js";
 import type { Tally } from "./standing.js";
 import { Store } from "./store.js";
-import { SETTLE_MS, Watch } from "./watch.js";
+import { HOSTS_MS, SETTLE_MS, Watch } from "./watch.js";
 
 const PROJECT = "/srv/orbit";
 const TREE = "/srv/orbit/.worktrees/retry-upload";
@@ -130,7 +130,7 @@ function watching(
     },
   });
   const reads = () => gh.calls.filter((call) => call.args[0] === "api");
-  const detail = (id: string) => detailOf(watch.viewOf(id), clock.now());
+  const detail = (id: string) => detailOf(watch.viewOf(id));
   return {
     hub,
     watch,
@@ -188,7 +188,7 @@ it("shows the pull request a session made, read once from its repository, and ke
   expect(rowsOf(at.watch.viewOf("ada")).map((row) => row.id)).toEqual([
     `pr:${KEY}`,
   ]);
-  expect(at.detail("ada")).toBe("this session");
+  expect(at.detail("ada")).toBeNull();
   expect(headerOf(at.watch.viewOf("ada"))).toEqual([
     { id: "refresh", label: "Refresh" },
   ]);
@@ -203,84 +203,99 @@ it("shows the pull request a session made, read once from its repository, and ke
   expect(again.claims().get("ada")).toEqual([KEY]);
 });
 
-it("looks the pull request up where the command ran when its output was held back", async () => {
-  const hub = new Hub([{ number: 42 }, { number: 7 }]);
-  const at = watching(hub);
+/** Answers `gh pr view` with this pull request, made at this time. */
+function viewing(hub: Hub, url: string, createdAt: string): void {
   hub.other = (call) =>
     call.args[0] === "pr" && call.args[1] === "view"
-      ? ok(JSON.stringify({ url: URL, number: 42 }))
+      ? ok(JSON.stringify({ url, createdAt }))
       : undefined;
+}
 
-  await at.watch.heard({
-    ...created("ada"),
+const views = (at: ReturnType<typeof watching>) =>
+  at.gh.calls.filter((call) => call.args[1] === "view");
+
+/** A `gh pr create` whose output was held back, run in the worktree. */
+function held(id: string) {
+  return {
+    ...created(id),
     command: "gh pr create --fill --head retry-upload",
     cwd: TREE,
     output: null,
-  });
+  };
+}
 
-  const views = at.gh.calls.filter((call) => call.args[1] === "view");
-  expect(views).toEqual([
+it("looks the pull request up where a create ran when its output was held back", async () => {
+  const hub = new Hub([{ number: 42 }]);
+  const at = watching(hub);
+  viewing(hub, URL, "2026-11-20T10:29:00Z");
+
+  await at.watch.heard(held("ada"));
+
+  expect(views(at)).toEqual([
     {
-      args: ["pr", "view", "retry-upload", "--json", "url,number"],
+      args: ["pr", "view", "retry-upload", "--json", "url,createdAt"],
       where: { cwd: TREE },
     },
   ]);
   expect(at.store.claims().get("ada")).toEqual([KEY]);
+});
 
-  hub.other = (call) =>
-    call.args[0] === "pr" && call.args[1] === "view"
-      ? ok(
-          JSON.stringify({
-            url: "https://github.com/orbit/api/pull/7",
-            number: 7,
-          }),
-        )
-      : undefined;
-  await at.clock.move(1_000);
-  await at.watch.heard({
-    ...created("ada"),
-    command: "gh pr ready 7 --repo orbit/api",
-    output: null,
-  });
+it("claims nothing it looked up that was made a while ago, or that another session has", async () => {
+  const hub = new Hub([{ number: 42 }]);
+  const at = watching(hub);
+  await tell(at, session({ id: "ada" }), session({ id: "grace" }));
 
-  expect(
-    at.gh.calls.filter((call) => call.args[1] === "view")[1]?.args,
-  ).toEqual(["pr", "view", "7", "--repo", "orbit/api", "--json", "url,number"]);
-  expect(at.store.claims().get("ada")).toEqual([
-    pullKey({ ...REPO, number: 7 }),
+  viewing(hub, URL, "2026-11-20T10:15:00Z");
+  await at.watch.heard(held("ada"));
+  expect(at.store.claims().size).toBe(0);
+
+  await at.watch.heard(created("grace"));
+  viewing(hub, URL, "2026-11-20T10:29:00Z");
+  await at.watch.heard(held("ada"));
+  expect(at.store.claims()).toEqual(new Map([["grace", [KEY]]]));
+  expect(at.watch.viewOf("ada").lines).toEqual([]);
+});
+
+it("takes nothing by looking from a made worktree whose branch shows it", async () => {
+  const hub = new Hub([{ number: 42 }]);
+  const at = watching(hub);
+  await tell(
+    at,
+    session({ id: "ada", cwd: TREE, worktree: true, branch: "retry-upload" }),
+    session({ id: "grace", cwd: TREE }),
+  );
+  expect(at.watch.viewOf("ada").lines.map((line) => line.pull.key)).toEqual([
     KEY,
   ]);
+
+  viewing(hub, URL, "2026-11-20T10:29:00Z");
+  await at.watch.heard(held("grace"));
+
+  expect(at.store.claims().size).toBe(0);
+  expect(at.watch.viewOf("ada").lines).toHaveLength(1);
+  expect(at.watch.viewOf("grace").lines).toEqual([]);
 });
 
-it("takes the pull request a command names when it printed none", async () => {
+it("claims nothing for a create that failed, or that found its pull request already there", async () => {
   const at = watching(new Hub([{ number: 42 }]));
+  const exists = `a pull request for branch "retry-upload" into branch "main" already exists:\n${URL}\n`;
 
+  await at.watch.heard({ ...created("ada"), ok: false, output: exists });
   await at.watch.heard({
     ...created("ada"),
-    command: `gh pr merge ${URL} --squash`,
-    output: "",
+    command: "gh pr create --fill; echo done",
+    output: `${exists}done\n`,
   });
+  await at.watch.heard({ ...held("ada"), ok: false });
 
-  expect(at.gh.calls.some((call) => call.args[1] === "view")).toBe(false);
-  expect(at.store.claims().get("ada")).toEqual([KEY]);
-});
-
-it("claims nothing for a command that failed without naming a pull request", async () => {
-  const at = watching();
-
-  await at.watch.heard({
-    ...created("ada"),
-    command: "gh pr create --fill",
-    ok: false,
-    output: "a pull request for branch retry-upload already exists\n",
-  });
-
-  expect(at.gh.calls).toEqual([]);
+  expect(views(at)).toEqual([]);
   expect(at.store.claims().size).toBe(0);
 });
 
-it("gives a merged, closed or readied pull request to its runner only when no session has it", async () => {
-  const at = watching(new Hub([{ number: 42 }, { number: 43 }]));
+it("claims nothing for a merge, close or ready, whatever its output names", async () => {
+  const hub = new Hub([{ number: 42 }, { number: 43 }]);
+  const at = watching(hub);
+  viewing(hub, URL, "2026-11-20T10:29:00Z");
   await tell(at, session({ id: "ada" }), session({ id: "grace" }));
 
   await at.watch.heard(created("ada"));
@@ -294,16 +309,20 @@ it("gives a merged, closed or readied pull request to its runner only when no se
     command: "gh pr close 43",
     output: "✓ Closed pull request https://github.com/orbit/api/pull/43\n",
   });
+  await at.watch.heard({
+    ...created("grace"),
+    command: "gh pr ready 43 --repo orbit/api",
+    output: null,
+  });
+  await at.watch.heard({
+    ...created("grace"),
+    command: `gh pr merge ${URL} --squash`,
+    output: "",
+  });
 
-  expect(at.store.claims()).toEqual(
-    new Map([
-      ["grace", [pullKey({ ...REPO, number: 43 })]],
-      ["ada", [KEY]],
-    ]),
-  );
-  expect(
-    at.watch.viewOf("grace").lines.map((line) => line.pull.number),
-  ).toEqual([43]);
+  expect(views(at)).toEqual([]);
+  expect(at.store.claims()).toEqual(new Map([["ada", [KEY]]]));
+  expect(at.watch.viewOf("grace").lines).toEqual([]);
 });
 
 it("shows a made worktree the pull requests of its branch, and never a plain folder on the same branch", async () => {
@@ -360,7 +379,7 @@ it("reads the sessions told together in one call per repository", async () => {
   ).toEqual([43]);
 });
 
-it("looks a branch up on another host only when gh says it is signed in there", async () => {
+it("looks a branch up on another host only when gh says it is signed in there, and asks again a while later", async () => {
   const hub = new Hub([{ number: 9, repo: GHE }]);
   const listing = "remote.origin.url git@ghe.corp.example:platform/infra.git\n";
   const at = watching(hub, listing);
@@ -370,6 +389,8 @@ it("looks a branch up on another host only when gh says it is signed in there", 
     worktree: true,
     branch: "retry-upload",
   });
+  const asked = () =>
+    at.gh.calls.filter((call) => call.args[0] === "auth").length;
 
   await tell(at, tree);
   expect(at.gh.calls.map((call) => call.args.slice(0, 2))).toEqual([
@@ -378,8 +399,9 @@ it("looks a branch up on another host only when gh says it is signed in there", 
   expect(at.folds).toEqual([]);
 
   hub.hosts = ["github.com", "GHE.corp.example"];
-  await at.watch.refresh();
+  await at.clock.move(HOSTS_MS);
 
+  expect(asked()).toBe(2);
   const reads = at.reads();
   expect(reads).toHaveLength(1);
   expect((reads[0] as Call).args.slice(2, 4)).toEqual([
@@ -391,7 +413,11 @@ it("looks a branch up on another host only when gh says it is signed in there", 
   ]);
 
   await at.clock.move(BASE_MS);
-  expect(at.gh.calls.filter((call) => call.args[0] === "auth")).toHaveLength(2);
+  expect(asked()).toBe(2);
+  expect(at.reads()).toHaveLength(2);
+
+  await at.watch.refresh();
+  expect(asked()).toBe(3);
 });
 
 it("says on the fold when gh is not signed in to a host, with the command to run", async () => {
@@ -415,7 +441,7 @@ it("says on the fold when gh is not signed in to a host, with the command to run
   hub.other = null;
   hub.pulls = [{ number: 9, repo: GHE }];
   await at.watch.refresh();
-  expect(at.detail("ada")).toBe("this session");
+  expect(at.detail("ada")).toBeNull();
 });
 
 it("says on the fold when gh is not on the PATH", async () => {
@@ -444,24 +470,42 @@ it("says on the fold when gh failed, and tries again on its timer", async () => 
 
   hub.other = null;
   await at.clock.move(BASE_MS);
-  expect(at.detail("ada")).toBe("this session");
+  expect(at.detail("ada")).toBeNull();
 });
 
-it("waits for the rate limit to lift, and says so, when few calls are left", async () => {
-  const at = watching(
-    new Hub([{ number: 42 }], {
-      remaining: 40,
-      resetAt: "2026-11-20T10:42:00Z",
-    }),
-  );
+it("leaves a host with few calls left alone until its limit lifts, and goes on reading the others", async () => {
+  const hub = new Hub([{ number: 42 }, { number: 9, repo: GHE }], {
+    remaining: 40,
+    resetAt: "2026-11-20T10:42:00Z",
+  });
+  const at = watching(hub);
+  const lifts = Date.parse("2026-11-20T10:42:01Z");
+  const readOf = (host: string) =>
+    at.reads().filter((call) => call.where.host === host).length;
 
   await at.watch.heard(created("ada"));
 
   expect(at.watch.viewOf("ada").lines).toHaveLength(1);
-  expect(at.detail("ada")).toBe(
-    "Rate limited on github.com, trying again in 12 min.",
+  expect(at.detail("ada")).toBeNull();
+  expect(at.clock.next).toBe(at.clock.now() + BASE_MS);
+
+  hub.rest = {};
+  await at.watch.heard(
+    created("grace", "https://ghe.corp.example/platform/infra/pull/9"),
   );
-  expect(at.clock.next).toBe(Date.parse("2026-11-20T10:42:01Z"));
+  await at.clock.move(BASE_MS);
+
+  expect(readOf("github.com")).toBe(1);
+  expect(readOf("ghe.corp.example")).toBe(2);
+  expect(at.watch.viewOf("ada").lines).toHaveLength(1);
+  expect(at.detail("ada")).toBe(
+    `Rate limited on github.com until ${timeOf(lifts)}.`,
+  );
+  expect(at.detail("grace")).toBeNull();
+
+  await at.clock.move(lifts - at.clock.now());
+  expect(readOf("github.com")).toBe(2);
+  expect(at.detail("ada")).toBeNull();
 });
 
 it("sends a fold and a mark again only when what they show changed", async () => {
@@ -526,9 +570,10 @@ it("tells the session once when its checks fail, and nothing of how it stood whe
   ]);
 });
 
-it("shows a session the pull requests of the sessions it started, and tells it their news once they ended", async () => {
+it("shows and tells a pull request only to the session that made it, not to the one that started that session", async () => {
   const hub = new Hub([{ number: 43, headRefName: "fix-auth" }]);
   const at = watching(hub);
+  const key = pullKey({ ...REPO, number: 43 });
   await tell(
     at,
     session({ id: "lead" }),
@@ -536,7 +581,6 @@ it("shows a session the pull requests of the sessions it started, and tells it t
       id: "child",
       cwd: "/srv/orbit/.worktrees/fix-auth",
       branch: "fix-auth",
-      startedBy: "lead",
     }),
   );
 
@@ -544,10 +588,25 @@ it("shows a session the pull requests of the sessions it started, and tells it t
     created("child", "https://github.com/orbit/api/pull/43"),
   );
 
-  const line = at.watch.viewOf("lead").lines[0];
-  expect(line?.pull.number).toBe(43);
-  expect(line?.from?.id).toBe("child");
-  expect([...at.folds].sort()).toEqual(["child", "lead"]);
+  expect(at.watch.viewOf("child").lines.map((line) => line.pull.key)).toEqual([
+    key,
+  ]);
+  expect(at.watch.viewOf("lead").lines).toEqual([]);
+  expect(at.folds).toEqual(["child"]);
+  expect(at.marks.map(([id]) => id)).toEqual(["child"]);
+  await expect(at.watch.merge("lead", key)).rejects.toThrow(
+    "that pull request is no longer shown",
+  );
+
+  hub.pulls = [
+    {
+      number: 43,
+      headRefName: "fix-auth",
+      checks: [{ name: "lint", conclusion: "FAILURE" }],
+    },
+  ];
+  await at.watch.refresh();
+  expect(at.notes).toEqual([["child", "#43 check failed: lint"]]);
 
   at.watch.ended("child");
   hub.pulls = [
@@ -560,8 +619,66 @@ it("shows a session the pull requests of the sessions it started, and tells it t
   ];
   await at.watch.refresh();
 
-  expect(at.notes).toEqual([["lead", "#43 closed"]]);
-  expect(at.folds.filter((id) => id === "child")).toHaveLength(1);
+  expect(at.notes).toEqual([["child", "#43 check failed: lint"]]);
+  expect(at.folds).toEqual(["child", "child"]);
+});
+
+it("lets go of the claims in a repository GitHub cannot find, and stops reading it", async () => {
+  const hub = new Hub([{ number: 42 }]);
+  const at = watching(hub);
+  await at.watch.heard(created("ada"));
+  expect(at.clock.waiting).toBe(1);
+
+  hub.other = (call) =>
+    call.args[0] === "api"
+      ? {
+          code: 1,
+          stderr:
+            "GraphQL: Could not resolve to a Repository with the name 'orbit/api'. (repository)",
+          stdout: JSON.stringify({
+            data: { repository: null },
+            errors: [
+              {
+                type: "NOT_FOUND",
+                path: ["repository"],
+                message:
+                  "Could not resolve to a Repository with the name 'orbit/api'.",
+              },
+            ],
+          }),
+        }
+      : undefined;
+  await at.watch.refresh();
+
+  expect(at.store.claims().size).toBe(0);
+  expect(at.watch.viewOf("ada")).toEqual({ lines: [], trouble: null });
+  expect(at.marks.at(-1)).toEqual(["ada", null]);
+  expect(at.clock.waiting).toBe(0);
+  const again = new Store(at.path);
+  await again.load(at.clock.now());
+  expect(again.claims().size).toBe(0);
+});
+
+it("says a repository failed only on the sessions with pull requests in it", async () => {
+  const WEB: Repo = { host: "github.com", owner: "orbit", name: "web" };
+  const hub = new Hub([{ number: 42 }, { number: 5, repo: WEB }]);
+  hub.other = (call) =>
+    call.args[0] === "api" && fieldsOf(call.args).get("name") === "web"
+      ? failed("HTTP 502: Bad Gateway")
+      : undefined;
+  const at = watching(hub);
+
+  await at.watch.heard(created("ada", "https://github.com/orbit/web/pull/5"));
+  await at.watch.heard(created("grace"));
+
+  expect(at.detail("ada")).toBe(
+    "gh failed on github.com: HTTP 502: Bad Gateway",
+  );
+  expect(at.detail("grace")).toBeNull();
+  expect(at.watch.viewOf("grace").lines).toHaveLength(1);
+  expect(headerOf(at.watch.viewOf("grace"))).toEqual([
+    { id: "refresh", label: "Refresh" },
+  ]);
 });
 
 it("stops its timer once no open pull request is shown", async () => {

@@ -135,6 +135,28 @@ it("reads what a gh pr command does and what it names", () => {
   expect(wordsOf("gh pr ready -- 12")).toMatchObject({ target: "12" });
 });
 
+it("reads short options with their value in the same word, and short options together", () => {
+  for (const line of [
+    "gh pr create -Hfix-auth --fill",
+    "gh pr create -H=fix-auth --fill",
+    "gh pr create -dHfix-auth",
+    "gh pr create -dH fix-auth",
+    "gh pr create -tRetry -Hfix-auth",
+  ]) {
+    expect(wordsOf(line)).toMatchObject({ head: "fix-auth" });
+  }
+  expect(wordsOf("gh pr create -Rorbit/api --fill")).toMatchObject({
+    repo: "orbit/api",
+    head: null,
+  });
+  expect(wordsOf("gh pr merge -sRorbit/web 41")).toEqual({
+    verb: "merge",
+    target: "41",
+    repo: "orbit/web",
+    head: null,
+  });
+});
+
 it("reads gh inside a shell it was handed to, and past other commands", () => {
   expect(wordsOf(`bash -lc 'cd api && gh pr create --fill'`)).toMatchObject({
     verb: "create",

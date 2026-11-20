@@ -3,11 +3,9 @@ import { pull, REPO, session } from "./fake.test-helper.js";
 import {
   branchKey,
   claimerOf,
-  descendants,
-  direct,
   KEPT_CLOSED_MS,
+  owned,
   owners,
-  shown,
   wanted,
   type Session,
   type World,
@@ -64,8 +62,8 @@ it("gives a pull request to the session that made it", () => {
     pulls: [pull({ number: 41 })],
   });
 
-  expect(direct(w, "s1")).toEqual([A41]);
-  expect(direct(w, "s2")).toEqual([]);
+  expect(owned(w, "s1")).toEqual([A41]);
+  expect(owned(w, "s2")).toEqual([]);
   expect(claimerOf(w, A41)).toBe("s1");
   expect(owners(w, A41)).toEqual(["s1"]);
 });
@@ -73,7 +71,7 @@ it("gives a pull request to the session that made it", () => {
 it("shows a claimed pull request before it is read", () => {
   const w = world({ sessions: [session({ id: "s1" })], claims: { s1: [A41] } });
 
-  expect(direct(w, "s1")).toEqual([A41]);
+  expect(owned(w, "s1")).toEqual([A41]);
   expect(wanted(w).refs).toEqual([{ ...REPO, number: 41 }]);
 });
 
@@ -85,7 +83,7 @@ it("gives a made worktree's session the pull request whose head is its branch", 
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "s1")).toEqual([A42]);
+  expect(owned(w, "s1")).toEqual([A42]);
   expect(wanted(w).branches).toEqual([{ repo: REPO, branch: "retry-upload" }]);
 });
 
@@ -97,7 +95,7 @@ it("takes a branch's pull request from a fork that is one of the folder's remote
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "s1")).toEqual([A42]);
+  expect(owned(w, "s1")).toEqual([A42]);
 });
 
 it("leaves a branch's pull request whose head is in a repository the folder has no remote for", () => {
@@ -113,7 +111,7 @@ it("leaves a branch's pull request whose head is in a repository the folder has 
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "s1")).toEqual([]);
+  expect(owned(w, "s1")).toEqual([]);
 });
 
 it("leaves a branch's pull request whose head is gone or is another branch", () => {
@@ -130,8 +128,8 @@ it("leaves a branch's pull request whose head is gone or is another branch", () 
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "s1")).toEqual([]);
-  expect(direct(other, "s1")).toEqual([]);
+  expect(owned(w, "s1")).toEqual([]);
+  expect(owned(other, "s1")).toEqual([]);
 });
 
 it("never gives a pull request by folder alone", () => {
@@ -146,8 +144,8 @@ it("never gives a pull request by folder alone", () => {
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "plain")).toEqual([]);
-  expect(direct(w, "unknown")).toEqual([]);
+  expect(owned(w, "plain")).toEqual([]);
+  expect(owned(w, "unknown")).toEqual([]);
   expect(wanted(w).branches).toEqual([]);
 });
 
@@ -159,7 +157,7 @@ it("gives nothing by branch for a folder that is no checkout of a known host", (
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "s1")).toEqual([]);
+  expect(owned(w, "s1")).toEqual([]);
   expect(wanted(w).branches).toEqual([]);
 });
 
@@ -172,8 +170,8 @@ it("lets a claim win over a branch: the pull request stays with the session that
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "maker")).toEqual([A42]);
-  expect(direct(w, "s1")).toEqual([]);
+  expect(owned(w, "maker")).toEqual([A42]);
+  expect(owned(w, "s1")).toEqual([]);
   expect(owners(w, A42)).toEqual(["maker"]);
 });
 
@@ -186,7 +184,7 @@ it("gives a branch's pull request to the worktree's own session when it made it"
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "s1")).toEqual([A42]);
+  expect(owned(w, "s1")).toEqual([A42]);
 });
 
 it("shows an unclaimed branch's pull request to both sessions sharing a folder and branch", () => {
@@ -197,8 +195,8 @@ it("shows an unclaimed branch's pull request to both sessions sharing a folder a
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "first")).toEqual([A42]);
-  expect(direct(w, "resumed")).toEqual([A42]);
+  expect(owned(w, "first")).toEqual([A42]);
+  expect(owned(w, "resumed")).toEqual([A42]);
   expect(owners(w, A42)).toEqual(["first", "resumed"]);
   expect(wanted(w).branches).toHaveLength(1);
 });
@@ -212,8 +210,8 @@ it("shows a claimed pull request only to the claimer among sessions sharing a fo
     branches: ON_BRANCH,
   });
 
-  expect(direct(w, "first")).toEqual([]);
-  expect(direct(w, "resumed")).toEqual([A42]);
+  expect(owned(w, "first")).toEqual([]);
+  expect(owned(w, "resumed")).toEqual([A42]);
 });
 
 it("puts claims first and lists each pull request once", () => {
@@ -225,7 +223,7 @@ it("puts claims first and lists each pull request once", () => {
     branches: { [branchKey(REPO, "retry-upload")]: [A42, A41] },
   });
 
-  expect(direct(w, "s1")).toEqual([A41, A42]);
+  expect(owned(w, "s1")).toEqual([A41, A42]);
 });
 
 it("keeps a merged or closed pull request a few days, then lets it go", () => {
@@ -239,54 +237,22 @@ it("keeps a merged or closed pull request a few days, then lets it go", () => {
       ],
     });
 
-  expect(direct(closed(NOW - KEPT_CLOSED_MS + 1), "s1")).toEqual([A41, A43]);
-  expect(direct(closed(NOW - KEPT_CLOSED_MS), "s1")).toEqual([A43]);
+  expect(owned(closed(NOW - KEPT_CLOSED_MS + 1), "s1")).toEqual([A41, A43]);
+  expect(owned(closed(NOW - KEPT_CLOSED_MS), "s1")).toEqual([A43]);
   expect(wanted(closed(NOW - KEPT_CLOSED_MS)).refs).toEqual([
     { ...REPO, number: 43 },
   ]);
 });
 
-it("shows a starter session the pull requests of the sessions it started, marked with whose", () => {
+it("shows a session only its own pull requests, not those of the sessions it started", () => {
   const w = world({
-    sessions: [
-      session({ id: "lead" }),
-      session({ id: "child", startedBy: "lead" }),
-      made("grandchild", { startedBy: "child" }),
-      session({ id: "stranger" }),
-    ],
+    sessions: [session({ id: "lead" }), session({ id: "child" })],
     claims: { lead: [A41], child: [A43] },
-    places: { [TREE]: PLACE },
-    pulls: [pull({ number: 41 }), pull({ number: 42 }), pull({ number: 43 })],
-    branches: ON_BRANCH,
+    pulls: [pull({ number: 41 }), pull({ number: 43 })],
   });
 
-  expect(descendants(w, "lead")).toEqual(["child", "grandchild"]);
-  expect(shown(w, "lead")).toEqual([
-    { key: A41, from: null },
-    { key: A43, from: "child" },
-    { key: A42, from: "grandchild" },
-  ]);
-  expect(shown(w, "child")).toEqual([
-    { key: A43, from: null },
-    { key: A42, from: "grandchild" },
-  ]);
-  expect(shown(w, "stranger")).toEqual([]);
-});
-
-it("does not go round for ever when sessions started each other", () => {
-  const w = world({
-    sessions: [
-      session({ id: "a", startedBy: "b" }),
-      session({ id: "b", startedBy: "a" }),
-    ],
-    claims: { a: [A41], b: [A43] },
-  });
-
-  expect(descendants(w, "a")).toEqual(["b"]);
-  expect(shown(w, "a")).toEqual([
-    { key: A41, from: null },
-    { key: A43, from: "b" },
-  ]);
+  expect(owned(w, "lead")).toEqual([A41]);
+  expect(owners(w, A43)).toEqual(["child"]);
 });
 
 it("wants each claimed pull request and each branch once, whatever sessions want them", () => {

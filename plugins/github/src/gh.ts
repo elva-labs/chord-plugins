@@ -23,8 +23,7 @@ export interface Where {
   host?: string;
 }
 
-/** Runs gh. Tests hand the plugin one of their own; gh itself is never
-    called from a test. */
+/** Runs gh. Most tests hand the plugin one of their own. */
 export type Gh = (args: string[], where?: Where) => Promise<Run>;
 
 /** What stands in the way of reading a host. */
@@ -46,58 +45,87 @@ export class Missing extends Error {
 const MAX = 16 * 1024 * 1024;
 
 /** How long one call may take. */
-const TIMEOUT_MS = 60_000;
+export const TIMEOUT_MS = 60_000;
 
 /** How much of what gh said goes on one line of the app's. */
 const SAID = 300;
 
 /** Runs gh with the arguments and answers with what it wrote and how it
     ended. A folder that is gone ends the call before gh starts. Only being
-    unable to start gh throws, as Missing when it is not there. */
-export const gh: Gh = (args, where = {}) =>
-  new Promise((resolve, reject) => {
-    if (where.cwd !== undefined && !existsSync(where.cwd)) {
-      resolve({ stdout: "", stderr: `no such folder: ${where.cwd}`, code: 1 });
-      return;
-    }
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      GH_PROMPT_DISABLED: "1",
-      GH_NO_UPDATE_NOTIFIER: "1",
-      NO_COLOR: "1",
-      CLICOLOR: "0",
-    };
-    if (where.host !== undefined) env.GH_HOST = where.host;
-    const child = execFile(
-      "gh",
-      args,
-      {
-        cwd: where.cwd,
-        env,
-        maxBuffer: MAX,
-        timeout: TIMEOUT_MS,
-        windowsHide: true,
-      },
-      (error, stdout, stderr) => {
-        if (error === null) {
-          resolve({ stdout, stderr, code: 0 });
-          return;
-        }
-        const code = (error as { code?: unknown }).code;
-        if (code === "ENOENT") {
-          reject(new Missing());
-          return;
-        }
-        if (typeof code !== "number") {
-          reject(new Error(`could not run gh: ${error.message}`));
-          return;
-        }
-        resolve({ stdout, stderr, code });
-      },
-    );
-    child.stdin?.on("error", () => {});
-    child.stdin?.end();
-  });
+    unable to start gh, or to see it end, throws: as Missing when it is not
+    there, and in a few words when it took longer than `timeoutMs`, wrote
+    too much or was stopped. */
+export function runner(timeoutMs: number): Gh {
+  return (args, where = {}) =>
+    new Promise((resolve, reject) => {
+      if (where.cwd !== undefined && !existsSync(where.cwd)) {
+        resolve({
+          stdout: "",
+          stderr: `no such folder: ${where.cwd}`,
+          code: 1,
+        });
+        return;
+      }
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        GH_PROMPT_DISABLED: "1",
+        GH_NO_UPDATE_NOTIFIER: "1",
+        NO_COLOR: "1",
+        CLICOLOR: "0",
+      };
+      if (where.host !== undefined) env.GH_HOST = where.host;
+      const child = execFile(
+        "gh",
+        args,
+        {
+          cwd: where.cwd,
+          env,
+          maxBuffer: MAX,
+          timeout: timeoutMs,
+          windowsHide: true,
+        },
+        (error, stdout, stderr) => {
+          if (error === null) {
+            resolve({ stdout, stderr, code: 0 });
+            return;
+          }
+          const code = (error as { code?: unknown }).code;
+          if (code === "ENOENT") {
+            reject(new Missing());
+            return;
+          }
+          if (typeof code !== "number") {
+            reject(new Error(cut(error, timeoutMs)));
+            return;
+          }
+          resolve({ stdout, stderr, code });
+        },
+      );
+      child.stdin?.on("error", () => {});
+      child.stdin?.end();
+    });
+}
+
+/** gh as the plugin runs it. */
+export const gh: Gh = runner(TIMEOUT_MS);
+
+/** Why a call ended without an exit code, in a few words. */
+function cut(error: Error, timeoutMs: number): string {
+  const { code, killed, signal } = error as {
+    code?: unknown;
+    killed?: unknown;
+    signal?: unknown;
+  };
+  if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+    return `gh wrote more than ${MAX / 1024 / 1024} MB`;
+  }
+  if (killed === true) {
+    const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+    return `gh gave no answer within ${seconds} second${seconds === 1 ? "" : "s"}`;
+  }
+  if (typeof signal === "string") return `gh was ended by ${signal}`;
+  return "gh could not be run";
+}
 
 /** What gh said went wrong, as one line for the app to show. */
 export function said(run: Run): string {

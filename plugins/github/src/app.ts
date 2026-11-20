@@ -13,7 +13,6 @@ import type {
   Row,
   SessionEvent,
 } from "@elva-labs/workbench-plugin";
-import { basename } from "node:path";
 import type { Trouble } from "./gh.js";
 import type { Session } from "./mapping.js";
 import type { Pull } from "./pulls.js";
@@ -51,7 +50,6 @@ export function sessionOf(
       cwd: filled(event.cwd) ?? event.project,
       worktree,
       branch: worktree ? filled(event.branch) : null,
-      startedBy: filled(event.startedBy),
     },
   };
 }
@@ -89,8 +87,6 @@ export function heardOf(event: CommandEvent): Heard {
 /** A pull request as a session's fold shows it. */
 export interface Line {
   pull: Pull;
-  /** The session it came from, when that is one this session started. */
-  from: Session | null;
   /** How it would be merged, when the user may merge it as it is. */
   merge: "merge" | "squash" | "rebase" | null;
 }
@@ -127,12 +123,7 @@ export function rowsOf(view: View): Row[] {
 /** One pull request's row. */
 export function rowOf(line: Line, withRepo: boolean): Row {
   const { pull } = line;
-  const parts = [
-    ...(withRepo ? [pull.name] : []),
-    pull.head,
-    summaryOf(pull),
-    ...(line.from === null ? [] : [`from ${nameOf(line.from)}`]),
-  ];
+  const parts = [...(withRepo ? [pull.name] : []), pull.head, summaryOf(pull)];
   const state = stateOf(pull);
   const actions: Action[] = [{ id: OPEN, label: "Open on GitHub" }];
   if (line.merge !== null) actions.push(mergeOf(pull, line.merge));
@@ -145,11 +136,6 @@ export function rowOf(line: Line, withRepo: boolean): Row {
     default: OPEN,
     facts: factsOf(pull).slice(0, 8),
   };
-}
-
-/** A started session's name: its branch, else its folder's. */
-export function nameOf(session: Session): string {
-  return session.branch ?? (basename(session.cwd) || session.id.slice(0, 8));
 }
 
 const METHOD = {
@@ -293,25 +279,29 @@ export function headerOf(view: View): Action[] {
 }
 
 /** The line beside the fold's title: what stands in the way and what to
-    do about it, or whose pull requests these are. */
-export function detailOf(view: View, now: number): string | null {
+    do about it, or nothing. */
+export function detailOf(view: View): string | null {
   const trouble = view.trouble;
-  if (trouble === null) return view.lines.length === 0 ? null : "this session";
+  if (trouble === null) return null;
   switch (trouble.kind) {
     case "missing":
       return "gh is not on the PATH. Install the GitHub CLI (cli.github.com), then Try again.";
     case "signed-out":
       return `Not signed in to ${trouble.host}. Run gh auth login --hostname ${trouble.host} in a terminal, then Try again.`;
-    case "limited": {
-      if (trouble.until === null || trouble.until <= now) {
-        return `Rate limited on ${trouble.host}, trying again in a few minutes.`;
-      }
-      const minutes = Math.max(1, Math.ceil((trouble.until - now) / 60_000));
-      return `Rate limited on ${trouble.host}, trying again in ${minutes} min.`;
-    }
+    case "limited":
+      return trouble.until === null
+        ? `Rate limited on ${trouble.host}, trying again in a few minutes.`
+        : `Rate limited on ${trouble.host} until ${timeOf(trouble.until)}.`;
     case "failed":
       return `gh failed on ${trouble.host}: ${trouble.text}`;
   }
+}
+
+/** A time of day, as hours and minutes on this machine's clock. */
+export function timeOf(at: number): string {
+  const date = new Date(at);
+  const two = (n: number): string => String(n).padStart(2, "0");
+  return `${two(date.getHours())}:${two(date.getMinutes())}`;
 }
 
 /** The mark on a session's row, or null to take it away. */
