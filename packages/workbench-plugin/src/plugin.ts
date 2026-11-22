@@ -15,7 +15,9 @@ import type {
   PresentOptions,
   ProjectEvent,
   Row,
+  SentEvent,
   SessionEvent,
+  StartOptions,
   StopEvent,
   ToolCall,
   TreeEvent,
@@ -102,6 +104,7 @@ export interface Events {
   tree: TreeEvent;
   stop: StopEvent;
   view_message: ViewMessageEvent;
+  sent: SentEvent;
 }
 
 /** Where the loop reads and writes, for a test that drives it itself. */
@@ -136,8 +139,25 @@ export interface Plugin {
   diff(project: string, file: DiffOptions): void;
   /** Presents media. */
   present(project: string, media: PresentOptions): void;
-  /** Puts a line on a session's row. */
-  notify(project: string, text: string, session?: string): void;
+  /** Puts a line on a session's row, or with no session says it as the
+      plugin's own notification, which opens the plugin's page with the
+      target when it is clicked. */
+  notify(
+    project: string,
+    text: string,
+    session?: string | null,
+    target?: string,
+  ): void;
+  /** Opens a web address in the user's browser, in answer to an id the
+      app gave the plugin within the last 30 seconds. */
+  openUrl(project: string, answers: string, url: string): void;
+  /** Asks the user, on the app's card, to start a session, in answer to an
+      id the app gave the plugin within the last 30 seconds. */
+  start(project: string, answers: string, session: StartOptions): void;
+  /** Sends a line to a session the plugin started, in answer to an id the
+      app gave the plugin within the last 30 seconds. What came of it
+      arrives at `on("sent", handler)`. */
+  send(answers: string, session: string, text: string): void;
   /** Puts the plugin's one mark on a session's row, in place of the last
       one, or takes it away when the mark is null. */
   mark(project: string, session: string, mark: Mark | null): void;
@@ -158,6 +178,27 @@ const NAME = /^[a-z][a-z0-9_-]*$/;
 
 /** The longest web address the app opens. */
 const URL_MAX = 2048;
+
+/** The longest prompt a start carries, and line a send does, in bytes. */
+const PROMPT_MAX = 8 * 1024;
+const TEXT_MAX = 4 * 1024;
+
+/** The longest ref, agent title and notification target, in bytes. */
+const TAG_MAX = 256;
+
+/** Characters that draw nothing, which the app passes over before it
+    looks at how a prompt begins. */
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\s]/gu;
+
+function bytes(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+/** Whether a line reads as a command to the app rather than words. */
+function command(text: string): boolean {
+  const seen = text.replace(UNSEEN, "");
+  return seen.startsWith("/") || seen.startsWith("!");
+}
 
 /** A section's header actions: the list it was registered with, or what
     the function it was registered with says for this project. */
@@ -366,13 +407,67 @@ class Builder implements Plugin {
     this.#write({ type: "present", project, ...media });
   }
 
-  notify(project: string, text: string, session?: string): void {
+  notify(
+    project: string,
+    text: string,
+    session?: string | null,
+    target?: string,
+  ): void {
+    if (target !== undefined && bytes(target) > TAG_MAX) {
+      throw new Error(`a target is ${TAG_MAX} bytes at most`);
+    }
     this.#write({
       type: "notify",
       project,
       text,
       ...(session ? { session } : {}),
+      ...(target ? { target } : {}),
     });
+  }
+
+  openUrl(project: string, answers: string, url: string): void {
+    if (!openable(url)) {
+      throw new Error(`not a web address the app opens: ${url}`);
+    }
+    this.#write({ type: "open_url", project, answers, url });
+  }
+
+  start(project: string, answers: string, session: StartOptions): void {
+    if (bytes(session.prompt) > PROMPT_MAX) {
+      throw new Error(`a prompt is ${PROMPT_MAX} bytes at most`);
+    }
+    if (command(session.prompt)) {
+      throw new Error("a prompt may not begin with / or !");
+    }
+    for (const [what, value] of [
+      ["ref", session.ref],
+      ["agent", session.agent],
+    ] as const) {
+      if (value !== undefined && bytes(value) > TAG_MAX) {
+        throw new Error(`a start's ${what} is ${TAG_MAX} bytes at most`);
+      }
+    }
+    this.#write({
+      type: "start",
+      answers,
+      project,
+      prompt: session.prompt,
+      ...(session.name === undefined ? {} : { name: session.name }),
+      ...(session.ref === undefined ? {} : { ref: session.ref }),
+      ...(session.worktree === undefined ? {} : { worktree: session.worktree }),
+      ...(session.purpose === undefined ? {} : { purpose: session.purpose }),
+      ...(session.agent === undefined ? {} : { agent: session.agent }),
+    });
+  }
+
+  send(answers: string, session: string, text: string): void {
+    if (bytes(text) > TEXT_MAX) {
+      throw new Error(`a line sent is ${TEXT_MAX} bytes at most`);
+    }
+    if (command(text)) {
+      throw new Error("a line sent may not begin with / or !");
+    }
+    this.#write({ type: "send", answers, session, text });
   }
 
   mark(project: string, session: string, mark: Mark | null): void {
@@ -469,6 +564,7 @@ class Builder implements Plugin {
       case "command":
       case "tree":
       case "view_message":
+      case "sent":
         this.#emit(message.type, message);
         return;
       case "stop":

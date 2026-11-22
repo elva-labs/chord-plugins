@@ -84,14 +84,30 @@ p.run();
   branch, and the session that started it.
 - `open`, `diff`, `present` and `notify` show a place in the viewer, a
   file's diff, media, or a line on a session's row, the same means the
-  agent has.
+  agent has. `notify(project, text, null, target)` names no session and is
+  the plugin's own notification: a click on it opens the plugin's page,
+  which is handed the target.
+- What the user does reaches the plugin with an id: an action's, or the
+  first message of a click or a key in the page, as the `id` on its
+  `view_message`. Within 30 seconds the plugin may answer it once each with
+  `openUrl(project, id, url)`, with `start(project, id, { prompt, name,
+ref, worktree, purpose, agent })`, which the app puts to the user on its
+  card before anything starts, and with `send(id, session, text)` to a
+  session the plugin started. A started session's lines carry its `ref`,
+  and what came of a send arrives at `on("sent", handler)`: `delivered`,
+  `gone` or `refused`. A prompt or a line that begins with `/` or `!`, or
+  that is longer than the app takes, is refused where it is made.
 - `mark(project, session, { icon, count, state, label })` puts the
   plugin's one mark on a session's row, in place of the last one, and
   `mark(project, session, null)` takes it away.
 - `view(project, { html, path, open })` sends the plugin's page for a
   project, written out or read from a file of the plugin's own directory,
   and `viewData(project, data)` sends that page a message while it is open.
-  What the page sends back arrives at `on("view_message", handler)`. A
+  What the page sends back arrives at `on("view_message", handler)`. The
+  page's side of the bridge, `window.workbench` with its `context`,
+  `onContext`, `onTarget`, `send`, `onData`, `open`, `agent` and `show`, is
+  typed as `Workbench`, and what it is told about the theme as
+  `PageContext`. A
   plugin with a page says how much room it asks for when it is made,
   `plugin({ name, version, view: "full" })`, the same word its manifest
   says.
