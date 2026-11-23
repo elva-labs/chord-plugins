@@ -7,6 +7,8 @@ import { plugin, type RunOptions } from "@elva-labs/workbench-plugin";
 import {
   confirmed,
   detailOf,
+  GUIDE,
+  GUIDE_URL,
   headerOf,
   heardOf,
   keyOfRow,
@@ -57,6 +59,8 @@ export async function serve(options: RunOptions = {}): Promise<void> {
     if (!confirmed(input)) return;
     await watch.merge(session, keyOfRow(row?.id));
   });
+
+  p.action(SECTION, GUIDE, ({ openUrl }) => openUrl(GUIDE_URL));
 
   p.action(SECTION, REFRESH, () => watch.refresh());
 
