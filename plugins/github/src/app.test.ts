@@ -1,25 +1,30 @@
 import type { CommandEvent, SessionEvent } from "@elva-labs/workbench-plugin";
 import { expect, it } from "vitest";
 import {
+  askRows,
   confirmed,
   detailOf,
   factsOf,
   headerOf,
   heardOf,
+  keyOfReviewRow,
   keyOfRow,
   markOf,
   MERGE,
   OPEN,
   REFRESH,
+  reviewRows,
   rowId,
   rowsOf,
   sessionOf,
   timeOf,
+  VIEW,
   type Line,
   type View,
 } from "./app.js";
 import { pull } from "./fake.test-helper.js";
 import type { Check, Pull } from "./pulls.js";
+import type { Asked } from "./requests.js";
 import {
   readyToMerge,
   stateOf,
@@ -404,6 +409,7 @@ it("reads a session as the app tells it", () => {
 
   expect(told({})).toEqual({
     ended: false,
+    ref: null,
     session: {
       id: "s1",
       project: "/srv/orbit",
@@ -422,6 +428,7 @@ it("reads a session as the app tells it", () => {
     }),
   ).toEqual({
     ended: false,
+    ref: null,
     session: {
       id: "s1",
       project: "/srv/orbit",
@@ -432,6 +439,10 @@ it("reads a session as the app tells it", () => {
   });
   expect(told({ branch: "retry-upload" })?.session.branch).toBeNull();
   expect(told({ event: "ended" })?.ended).toBe(true);
+  expect(told({ ref: "review:github.com/orbit/api#42" })?.ref).toBe(
+    "review:github.com/orbit/api#42",
+  );
+  expect(told({ ref: "" })?.ref).toBeNull();
   expect(told({ id: "" })).toBeNull();
 });
 
@@ -459,4 +470,58 @@ it("reads a heard command, and output the app held back as none", () => {
   expect(heardOf({ ...event, output: null, withheld: true }).output).toBeNull();
   expect(heardOf({ ...event, output: "", withheld: true }).output).toBeNull();
   expect(heardOf({ ...event, cwd: "" }).cwd).toBe("/srv/orbit");
+});
+
+function ask(number: number, author = "Grace Hopper"): Asked {
+  return {
+    host: "github.com",
+    owner: "orbit",
+    name: "api",
+    number,
+    key: `github.com/orbit/api#${number}`,
+    title: "Retry the upload",
+    url: `https://github.com/orbit/api/pull/${number}`,
+    author,
+    at: NOW,
+    draft: false,
+    fork: false,
+    checks: [],
+    reviewed: null,
+  };
+}
+
+it("ends a fold with how many reviews are asked of you, by whom, and View", () => {
+  expect(askRows([])).toEqual([]);
+  expect(askRows([ask(7)])).toEqual([
+    {
+      id: "asks",
+      label: "1 review asked of you",
+      detail: "Grace Hopper",
+      state: "waiting",
+      actions: [{ id: VIEW, label: "View" }],
+      default: VIEW,
+    },
+  ]);
+  const rows = askRows([ask(7), ask(8), ask(9, "Alan Turing")]);
+  expect(rows[0]?.label).toBe("3 reviews asked of you");
+  expect(rows[0]?.detail).toBe("Grace Hopper and Alan Turing");
+  expect(keyOfRow(rows[0]?.id)).toBeNull();
+  expect(keyOfReviewRow(rows[0]?.id)).toBeNull();
+});
+
+it("gives a review session a row for the pull request it reviews, which opens it", () => {
+  const rows = reviewRows([ask(7)]);
+  expect(rows).toEqual([
+    {
+      id: "review:github.com/orbit/api#7",
+      label: "#7 Retry the upload",
+      detail: "orbit/api · by Grace Hopper",
+      actions: [{ id: OPEN, label: "Open on GitHub" }],
+      default: OPEN,
+    },
+  ]);
+  expect(keyOfReviewRow(rows[0]?.id)).toBe("github.com/orbit/api#7");
+  expect(keyOfRow(rows[0]?.id)).toBeNull();
+  expect(keyOfReviewRow(rowId("github.com/orbit/api#7"))).toBeNull();
+  expect(keyOfReviewRow(undefined)).toBeNull();
 });

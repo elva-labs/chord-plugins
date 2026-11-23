@@ -7,7 +7,7 @@
  */
 
 import { pullKey, repoKey, type PullRef, type Repo } from "./address.js";
-import { Missing, troubleOf, type Gh, type Trouble } from "./gh.js";
+import { Missing, troubleOf, type Gh, type Run, type Trouble } from "./gh.js";
 
 /** How a check stands, in gh's own buckets. */
 export type Bucket = "pass" | "fail" | "pending" | "skipping";
@@ -92,6 +92,17 @@ export const CHECKS = 100;
     not read when GitHub says one of them failed or is running. */
 export const UNREAD = `A check past the first ${CHECKS}`;
 
+/** The head commit's checks, as a pull request's fields in a query. */
+export const HEAD_CHECKS = `commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: ${CHECKS}) {
+    totalCount
+    nodes {
+      __typename
+      ... on CheckRun { name status conclusion startedAt completedAt
+        checkSuite { workflowRun { workflow { name } } } }
+      ... on StatusContext { context state createdAt }
+    }
+  } } } } }`;
+
 const PULL = `fragment pull on PullRequest {
   number title url state isDraft headRefName headRefOid baseRefName
   mergeable mergeStateStatus reviewDecision closedAt mergedAt
@@ -107,15 +118,7 @@ const PULL = `fragment pull on PullRequest {
     state submittedAt
     author { login ... on User { name } }
   } }
-  commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: ${CHECKS}) {
-    totalCount
-    nodes {
-      __typename
-      ... on CheckRun { name status conclusion startedAt completedAt
-        checkSuite { workflowRun { workflow { name } } } }
-      ... on StatusContext { context state createdAt }
-    }
-  } } } } }
+  ${HEAD_CHECKS}
 }`;
 
 /** The query for one repository, and the variables it takes. */
@@ -171,23 +174,31 @@ export async function readRepo(
   const data = parsed?.data;
   if (!isObject(data) || !isObject(data.repository)) {
     if (parsed !== null && gone(parsed)) return { gone: true };
-    const trouble = troubleOf(
-      answer.code === 0 ? { ...answer, code: 1 } : answer,
-      ask.host,
-    ) ?? { kind: "failed", host: ask.host, text: "gh answered nothing" };
-    if (trouble.kind === "failed" && parsed !== null) {
-      const said = messages(parsed);
-      if (/rate limit/i.test(said)) {
-        return { trouble: { kind: "limited", host: ask.host, until: null } };
-      }
-      if (said !== "") return { trouble: { ...trouble, text: said } };
-    }
-    if (trouble.kind === "limited") {
-      return { trouble: { ...trouble, until: rateOf(data)?.resetAt ?? null } };
-    }
-    return { trouble };
+    return { trouble: failedOf(answer, parsed, ask.host) };
   }
   return readOf(ask, data);
+}
+
+/** What stood in the way of a GraphQL call that did not answer with what
+    it asked for: what gh said, or what the answer's errors say. */
+export function failedOf(
+  answer: Run,
+  parsed: Record<string, unknown> | null,
+  host: string,
+): Trouble {
+  const trouble = troubleOf(
+    answer.code === 0 ? { ...answer, code: 1 } : answer,
+    host,
+  ) ?? { kind: "failed", host, text: "gh answered nothing" };
+  if (trouble.kind === "failed" && parsed !== null) {
+    const said = messages(parsed);
+    if (/rate limit/i.test(said)) return { kind: "limited", host, until: null };
+    if (said !== "") return { ...trouble, text: said };
+  }
+  if (trouble.kind === "limited") {
+    return { ...trouble, until: rateOf(parsed?.data)?.resetAt ?? null };
+  }
+  return trouble;
 }
 
 /** What one repository's answer holds. */
@@ -239,7 +250,7 @@ function rightsOf(repository: Record<string, unknown>): Rights {
   return { permission, method };
 }
 
-function rateOf(data: unknown): Read["rate"] {
+export function rateOf(data: unknown): Read["rate"] {
   if (!isObject(data) || !isObject(data.rateLimit)) return null;
   const remaining = data.rateLimit.remaining;
   const resetAt = Date.parse(text(data.rateLimit.resetAt));
@@ -283,7 +294,7 @@ export function pullOf(repo: Repo, node: unknown): Pull | null {
       node.reviewDecision === "REVIEW_REQUIRED"
         ? node.reviewDecision
         : null,
-    checks: checksOf(node.commits),
+    checks: checksIn(node.commits),
     reviews: reviewsOf(node.latestReviews),
     asked: askedOf(node.reviewRequests),
     closedAt: Number.isNaN(closed) ? null : closed,
@@ -313,7 +324,7 @@ export function bucketOf(state: string): Bucket {
 /** The head commit's checks, one per name, the newest of each. A check
     run that has not started yet is newer than any that has. Past the
     first CHECKS, GitHub's state of them all stands in for the rest. */
-function checksOf(commits: unknown): Check[] {
+export function checksIn(commits: unknown): Check[] {
   const rollup = path(commits, ["nodes", 0, "commit", "statusCheckRollup"]);
   const contexts = path(rollup, ["contexts", "nodes"]);
   if (!Array.isArray(contexts)) return [];
@@ -362,7 +373,7 @@ function checksOf(commits: unknown): Check[] {
   return checks;
 }
 
-function reviewsOf(latest: unknown): Review[] {
+export function reviewsOf(latest: unknown): Review[] {
   const nodes = path(latest, ["nodes"]);
   if (!Array.isArray(nodes)) return [];
   const reviews: Review[] = [];
@@ -414,7 +425,7 @@ function messages(answer: Record<string, unknown>): string {
     .join("; ");
 }
 
-function parse(stdout: string): Record<string, unknown> | null {
+export function parse(stdout: string): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(stdout);
     return isObject(value) ? value : null;
@@ -423,7 +434,7 @@ function parse(stdout: string): Record<string, unknown> | null {
   }
 }
 
-function path(value: unknown, steps: (string | number)[]): unknown {
+export function path(value: unknown, steps: (string | number)[]): unknown {
   let at = value;
   for (const step of steps) {
     if (typeof step === "number") {
@@ -437,11 +448,11 @@ function path(value: unknown, steps: (string | number)[]): unknown {
   return at;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
+export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function text(value: unknown): string {
+export function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 

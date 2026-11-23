@@ -36,7 +36,7 @@ export interface Checks {
 
 /** How the checks stand: failed when one failed, busy while one runs,
     ok when all are done, and null when there are none. */
-export function checksOf(pull: Pull): Checks {
+export function checksOf(pull: Pick<Pull, "checks">): Checks {
   const failed: string[] = [];
   let passed = 0;
   let running = 0;

@@ -37,6 +37,7 @@ import {
   type World,
 } from "./mapping.js";
 import { notice, type Seen } from "./notices.js";
+import { Pauses } from "./pauses.js";
 import { placeOf, type Place, type Remotes } from "./place.js";
 import {
   asksOf,
@@ -67,6 +68,8 @@ export interface Needs {
   store: Store;
   clock: Clock;
   out: Out;
+  /** The rate-limited hosts, when other readers share them. */
+  pauses?: Pauses;
 }
 
 /** How long session news waits for more before a read, so the sessions
@@ -76,12 +79,6 @@ export const SETTLE_MS = 250;
 /** Below this many calls left, a host is not read again until its count
     starts again. */
 export const LOW_RATE = 100;
-
-/** How long a host is left alone the first time it is rate limited
-    without saying until when; each time after, twice as long. */
-export const LIMITED_MS = 5 * 60_000;
-/** The longest a host is left alone for a rate limit. */
-export const LIMITED_MAX_MS = 30 * 60_000;
 
 /** How long what gh said of the hosts it is signed in to holds. */
 export const HOSTS_MS = 10 * 60_000;
@@ -102,18 +99,11 @@ const MERGERS = new Set(["ADMIN", "MAINTAIN", "WRITE"]);
 const EXISTS = /already exists/i;
 
 /** The hosts gh is known to be for without asking it. */
-function obvious(host: string): boolean {
+export function obvious(host: string): boolean {
   return host === "github.com" || host.endsWith(".ghe.com");
 }
 
 const NOTHING: View = { lines: [], trouble: null };
-
-/** A host left alone for a rate limit: until when, and how long to wait
-    the next time it is limited without saying until when. */
-interface Pause {
-  until: number;
-  next: number;
-}
 
 export class Watch {
   readonly #gh: Gh;
@@ -132,7 +122,7 @@ export class Watch {
       `repoKey`. */
   #troubles = new Map<string, Trouble>();
   /** The rate-limited hosts. */
-  readonly #paused = new Map<string, Pause>();
+  readonly #paused: Pauses;
   /** The hosts gh is signed in to, as it last said, and when it said, or
       null before it said. */
   #hosts: Set<string> | null = null;
@@ -156,6 +146,7 @@ export class Watch {
     this.#store = needs.store;
     this.#clock = needs.clock;
     this.#out = needs.out;
+    this.#paused = needs.pauses ?? new Pauses();
     this.schedule = new Schedule(needs.clock, () => this.#read());
   }
 
@@ -387,13 +378,9 @@ export class Watch {
         troubles.set(repoKey(ask), gone);
         continue;
       }
-      const pause = this.#paused.get(ask.host);
-      if (pause !== undefined && pause.until > now) {
-        troubles.set(repoKey(ask), {
-          kind: "limited",
-          host: ask.host,
-          until: pause.until,
-        });
+      const until = this.#paused.until(ask.host, now);
+      if (until !== null) {
+        troubles.set(repoKey(ask), { kind: "limited", host: ask.host, until });
       } else {
         asks.push(ask);
       }
@@ -435,7 +422,7 @@ export class Watch {
         const trouble = answer.trouble;
         if (trouble.kind === "limited") {
           limited.add(ask.host);
-          const until = this.#pause(ask.host, trouble.until, now);
+          const until = this.#paused.pause(ask.host, trouble.until, now);
           troubles.set(repoKey(ask), { ...trouble, until });
         } else {
           troubles.set(repoKey(ask), trouble);
@@ -455,13 +442,13 @@ export class Watch {
       }
       if (answer.rate !== null && answer.rate.remaining < LOW_RATE) {
         limited.add(ask.host);
-        this.#pause(ask.host, answer.rate.resetAt, now);
+        this.#paused.pause(ask.host, answer.rate.resetAt, now);
       } else {
         fine.add(ask.host);
       }
     });
     for (const host of fine) {
-      if (!limited.has(host)) this.#paused.delete(host);
+      if (!limited.has(host)) this.#paused.lift(host);
     }
     this.#troubles = troubles;
 
@@ -478,36 +465,12 @@ export class Watch {
     // A paused host is read again when its pause ends, and a branch on a
     // host gh is not signed in to is looked for again once what gh said
     // of its hosts no longer holds, until gh was asked HOST_TRIES times.
-    const wakes = [...this.#paused.values()]
-      .map((pause) => pause.until)
-      .filter((until) => until > now);
+    const wakes = this.#paused.ends(now);
     if (unsigned && this.#hostTries < HOST_TRIES) {
       wakes.push((this.#hosts === null ? now : this.#hostsAt) + HOSTS_MS);
     }
     const wake = wakes.length === 0 ? null : Math.min(...wakes);
     return { watching: this.#watching(world, troubles), changed, wake };
-  }
-
-  /** Leaves a host alone until its rate limit lifts: until a second after
-      the time GitHub gave, or for longer each time it gave none, at most
-      LIMITED_MAX_MS. Answers until when. */
-  #pause(host: string, until: number | null, now: number): number {
-    const before = this.#paused.get(host);
-    let pause: Pause;
-    if (until !== null && until > now) {
-      pause = {
-        until: Math.min(until + 1_000, now + LIMITED_MAX_MS),
-        next: LIMITED_MS,
-      };
-    } else {
-      const wait = before?.next ?? LIMITED_MS;
-      pause = {
-        until: now + wait,
-        next: Math.min(wait * 2, LIMITED_MAX_MS),
-      };
-    }
-    this.#paused.set(host, pause);
-    return pause.until;
   }
 
   /** Lets go of everything read from a repository GitHub could not find.

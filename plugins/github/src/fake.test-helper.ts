@@ -345,3 +345,42 @@ export async function settle(): Promise<void> {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
+
+/** A pull request in the search for reviews asked, as GitHub writes it. */
+export interface Sought extends Node {
+  author?: { login: string; name?: string } | null;
+  createdAt?: string;
+  /** Whether its head is a fork's. */
+  isCrossRepository?: boolean;
+}
+
+/** The search for reviews asked, as `gh api graphql` prints it. */
+export function search(
+  nodes: Sought[],
+  given: { viewer?: string; remaining?: number; resetAt?: string } = {},
+): string {
+  return JSON.stringify({
+    data: {
+      viewer: { login: given.viewer ?? "ada" },
+      rateLimit: {
+        remaining: given.remaining ?? 4800,
+        resetAt: given.resetAt ?? "2026-11-20T11:00:00Z",
+      },
+      search: {
+        nodes: nodes.map((one) => {
+          const repo = one.repo ?? REPO;
+          return {
+            ...node(one),
+            createdAt: one.createdAt ?? "2026-11-20T09:00:00Z",
+            isCrossRepository: one.isCrossRepository ?? false,
+            author:
+              one.author === undefined
+                ? { login: "grace", name: "Grace Hopper" }
+                : one.author,
+            repository: { name: repo.name, owner: { login: repo.owner } },
+          };
+        }),
+      },
+    },
+  });
+}
