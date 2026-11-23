@@ -27,7 +27,15 @@ import {
   type Line,
   type View,
 } from "./app.js";
-import { Missing, said, type Gh, type Trouble } from "./gh.js";
+import {
+  Missing,
+  said,
+  saysSignedOut,
+  type Gh,
+  type Need,
+  type Run,
+  type Trouble,
+} from "./gh.js";
 import {
   branchKey,
   owned,
@@ -106,7 +114,7 @@ function obvious(host: string): boolean {
   return host === "github.com" || host.endsWith(".ghe.com");
 }
 
-const NOTHING: View = { lines: [], trouble: null };
+const NOTHING: View = { lines: [], trouble: null, need: null };
 
 /** A host left alone for a rate limit: until when, and how long to wait
     the next time it is limited without saying until when. */
@@ -140,6 +148,9 @@ export class Watch {
   /** How many times gh was asked of its hosts, and how many of the reads
       in a row that asked found a wanted branch on a host not among them. */
   #hostAsks = 0;
+  /** What the last check found gh lacking, or null when it has all it
+      needs or could not tell. */
+  #need: Need | null = null;
   #hostTries = 0;
   /** The repositories GitHub could not find, by `repoKey`, left unread
       until Refresh. Their claims stay on disk. */
@@ -159,9 +170,38 @@ export class Watch {
     this.schedule = new Schedule(needs.clock, () => this.#read());
   }
 
-  /** Reads the claims kept on disk. */
+  /** Reads the claims kept on disk, and checks that gh is there and
+      signed in. */
   async start(): Promise<void> {
     await this.#store.load(this.#clock.now());
+    await this.check();
+  }
+
+  /** Looks for gh and a sign-in: one `gh auth status`, which is also what
+      the hosts gh is signed in to are read from. A check that cannot tell,
+      because gh did not answer in time or said something else, finds
+      nothing lacking. */
+  async check(): Promise<void> {
+    this.#need = await this.#probe();
+  }
+
+  async #probe(): Promise<Need | null> {
+    let run: Run | null;
+    try {
+      run = await within(
+        CHECK_MS,
+        this.#gh(["auth", "status", "--json", "hosts"]),
+      );
+    } catch (error) {
+      return error instanceof Missing ? "missing" : null;
+    }
+    if (run === null) return null;
+    const hosts = hostsOf(run.stdout);
+    if (hosts === null) return saysSignedOut(run) ? "signed-out" : null;
+    if (Object.values(hosts).every(failing)) return "signed-out";
+    this.#hosts = new Set(Object.keys(hosts).map((host) => host.toLowerCase()));
+    this.#hostsAt = this.#clock.now();
+    return null;
   }
 
   /** Stops the timer. */
@@ -225,6 +265,7 @@ export class Watch {
       could not find too. */
   async refresh(): Promise<void> {
     this.#hosts = null;
+    await this.check();
     this.#hostTries = 0;
     this.#paused.clear();
     this.#gone.clear();
@@ -234,7 +275,7 @@ export class Watch {
 
   /** What a session's fold shows. */
   viewOf(id: string | null): View {
-    if (id === null) return NOTHING;
+    if (id === null) return { ...NOTHING, need: this.#need };
     return this.#view(this.#world(this.#clock.now()), id);
   }
 
@@ -671,7 +712,7 @@ export class Watch {
       (a, b) =>
         Number(a.pull.state !== "OPEN") - Number(b.pull.state !== "OPEN"),
     );
-    return { lines, trouble: this.#troubleOf(world, id, keys) };
+    return { lines, trouble: this.#troubleOf(world, id, keys), need: null };
   }
 
   #mergeOf(pull: Pull): Line["merge"] {
@@ -704,6 +745,46 @@ export class Watch {
     }
     return null;
   }
+}
+
+/** How long a check waits for gh before it tells nothing. */
+export const CHECK_MS = 10_000;
+
+/** What a promise answers, or null when it has not within `ms`. */
+async function within<T>(ms: number, work: Promise<T>): Promise<T | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  try {
+    return await Promise.race([work, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** The hosts in what `gh auth status --json hosts` printed, or null when
+    it printed something else. */
+function hostsOf(stdout: string): Record<string, unknown> | null {
+  try {
+    const { hosts } = JSON.parse(stdout) as { hosts?: unknown };
+    return typeof hosts === "object" && hosts !== null
+      ? (hosts as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether every account of a host has a token gh found invalid. */
+function failing(accounts: unknown): boolean {
+  return (
+    Array.isArray(accounts) &&
+    accounts.length > 0 &&
+    accounts.every(
+      (one) => (one as { state?: unknown } | null)?.state === "error",
+    )
+  );
 }
 
 /** What an empty fold was sent as, which is what a fold never sent is. */

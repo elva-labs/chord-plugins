@@ -13,7 +13,7 @@ import type {
   Row,
   SessionEvent,
 } from "@elva-labs/workbench-plugin";
-import type { Trouble } from "./gh.js";
+import type { Need, Trouble } from "./gh.js";
 import type { Session } from "./mapping.js";
 import type { Pull } from "./pulls.js";
 import {
@@ -33,6 +33,12 @@ export const TITLE = "Pull requests";
 export const OPEN = "open";
 export const MERGE = "merge";
 export const REFRESH = "refresh";
+export const GUIDE = "guide";
+
+/** Where gh is installed from, and the row ids of what it needs. */
+export const GUIDE_URL = "https://cli.github.com";
+const GH_ROW = "need:gh";
+const SIGN_ROW = "need:sign-in";
 
 /** A session as the app tells it, and whether it ended, or null for one
     without an id. An app that says nothing of a folder or a worktree gives
@@ -95,6 +101,8 @@ export interface Line {
 export interface View {
   lines: Line[];
   trouble: Trouble | null;
+  /** What gh lacks on this machine, shown on the project's own fold. */
+  need: Need | null;
 }
 
 const ROW = "pr:";
@@ -111,13 +119,62 @@ export function keyOfRow(id: string | undefined): string | null {
 }
 
 /** The fold's rows. */
-export function rowsOf(view: View): Row[] {
+export function rowsOf(view: View, platform = process.platform): Row[] {
+  if (view.need !== null) return needRows(view.need, platform);
   const repos = new Set(
     view.lines.map(
       (line) => `${line.pull.host}/${line.pull.owner}/${line.pull.name}`,
     ),
   );
   return view.lines.map((line) => rowOf(line, repos.size > 1));
+}
+
+/** How gh is installed on a platform, as a command to run, or null where
+    it depends on the system. */
+export function installOf(platform: string): string | null {
+  if (platform === "darwin") return "brew install gh";
+  if (platform === "win32") return "winget install --id GitHub.cli";
+  return null;
+}
+
+/** The rows that say what gh needs: the install while it is missing, and
+    the sign-in, which waits on the install. */
+function needRows(need: Need, platform: string): Row[] {
+  const signIn: Fact = { label: "Run", text: "gh auth login" };
+  if (need === "signed-out") {
+    return [
+      {
+        id: SIGN_ROW,
+        label: "Signed in to GitHub",
+        detail: "Not signed in",
+        state: "waiting",
+        facts: [signIn],
+      },
+    ];
+  }
+  const command = installOf(platform);
+  return [
+    {
+      id: GH_ROW,
+      label: "GitHub CLI",
+      detail: "Not found",
+      state: "waiting",
+      actions: [{ id: GUIDE, label: "Install guide" }],
+      default: GUIDE,
+      facts: [
+        command === null
+          ? { label: "Install", text: "see the install guide" }
+          : { label: "Install", text: command },
+        { label: "Guide", text: "cli.github.com" },
+      ],
+    },
+    {
+      id: SIGN_ROW,
+      label: "Signed in to GitHub",
+      detail: "After the install",
+      facts: [signIn],
+    },
+  ];
 }
 
 /** One pull request's row. */
@@ -273,6 +330,7 @@ function people(who: string[]): string {
 /** The fold's header: Try again while something stands in the way, else
     Refresh, and nothing at all when the fold is empty. */
 export function headerOf(view: View): Action[] {
+  if (view.need !== null) return [{ id: REFRESH, label: "Check again" }];
   if (view.trouble !== null) return [{ id: REFRESH, label: "Try again" }];
   if (view.lines.length === 0) return [];
   return [{ id: REFRESH, label: "Refresh" }];
@@ -281,6 +339,10 @@ export function headerOf(view: View): Action[] {
 /** The line beside the fold's title: what stands in the way and what to
     do about it, or nothing. */
 export function detailOf(view: View): string | null {
+  if (view.need === "missing") {
+    return "Needs the GitHub CLI on this machine, signed in.";
+  }
+  if (view.need === "signed-out") return "Needs a sign-in to GitHub.";
   const trouble = view.trouble;
   if (trouble === null) return null;
   switch (trouble.kind) {

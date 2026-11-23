@@ -198,3 +198,53 @@ it("shows, marks, opens, merges and tells of the pull request a session made, ov
   app.send({ type: "stop" });
   await done;
 });
+
+it("says on the project's own fold that gh is signed out, and again when checked again", async () => {
+  await writeFile(
+    join(dir, "gh"),
+    [
+      "#!/bin/sh",
+      `if [ -f "${dir}/in" ]; then echo '{"hosts":{"github.com":[]}}'; else echo '{"hosts":{}}'; fi`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const app = streams();
+  const done = serve({ input: app.input, output: app.output });
+  await app.find((line) => line.type === "hello");
+  app.send({ type: "hello", app: "1", projects: [PROJECT] });
+
+  const said = await app.find(
+    (line) => line.type === "section" && line.project === PROJECT,
+  );
+  expect(said.line).toMatchObject({
+    id: "pulls",
+    detail: "Needs a sign-in to GitHub.",
+    rows: [{ id: "need:sign-in", state: "waiting" }],
+    actions: [{ id: "refresh", label: "Check again" }],
+  });
+  expect(said.line.session).toBeUndefined();
+
+  await writeFile(join(dir, "in"), "");
+  app.send({
+    type: "action",
+    id: "a1",
+    section: "pulls",
+    action: "refresh",
+    row: null,
+    input: {},
+    project: PROJECT,
+  });
+  const quiet = await app.find(
+    (line) =>
+      line.type === "section" &&
+      line.project === PROJECT &&
+      line.rows.length === 0,
+    said.at + 1,
+  );
+  expect(quiet.line.detail).toBeUndefined();
+  expect(quiet.line.actions).toEqual([]);
+
+  app.send({ type: "stop" });
+  await done;
+});

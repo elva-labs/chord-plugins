@@ -831,7 +831,11 @@ it("shows nothing for the project as a whole", async () => {
   const at = watching(new Hub([{ number: 42 }]));
   await at.watch.heard(created("ada"));
 
-  expect(at.watch.viewOf(null)).toEqual({ lines: [], trouble: null });
+  expect(at.watch.viewOf(null)).toEqual({
+    lines: [],
+    trouble: null,
+    need: null,
+  });
 });
 
 it("keeps what a session claimed across a restart", async () => {
@@ -856,4 +860,61 @@ it("keeps what a session claimed across a restart", async () => {
 
   expect(folds).toEqual(["ada"]);
   expect(watch.viewOf("ada").lines.map((line) => line.pull.key)).toEqual([KEY]);
+});
+
+it("checks at the start that gh is there and signed in, and says nothing when it is", async () => {
+  const at = watching();
+  await at.watch.start();
+
+  expect(at.watch.viewOf(null).need).toBeNull();
+  expect(at.gh.calls.map((call) => call.args)).toEqual([
+    ["auth", "status", "--json", "hosts"],
+  ]);
+});
+
+it("finds gh missing at the start, and again after Check again", async () => {
+  const hub = new Hub();
+  hub.other = () => new Missing();
+  const at = watching(hub);
+  await at.watch.start();
+  expect(at.watch.viewOf(null).need).toBe("missing");
+  expect(at.watch.viewOf("ada").need).toBeNull();
+
+  hub.other = null;
+  await at.watch.refresh();
+  expect(at.watch.viewOf(null).need).toBeNull();
+});
+
+it("finds gh signed out, whether it says so with no hosts, an expired token or a plain message", async () => {
+  const hub = new Hub();
+  const at = watching(hub);
+
+  hub.hosts = [];
+  await at.watch.start();
+  expect(at.watch.viewOf(null).need).toBe("signed-out");
+
+  hub.other = () =>
+    ok(JSON.stringify({ hosts: { "github.com": [{ state: "error" }] } }));
+  await at.watch.check();
+  expect(at.watch.viewOf(null).need).toBe("signed-out");
+
+  hub.other = () =>
+    failed(
+      "You are not logged into any GitHub hosts. To log in, run: gh auth login",
+    );
+  await at.watch.check();
+  expect(at.watch.viewOf(null).need).toBe("signed-out");
+
+  hub.other = () => failed("something else broke");
+  await at.watch.check();
+  expect(at.watch.viewOf(null).need).toBeNull();
+});
+
+it("reads the hosts once for the check and the first read after it", async () => {
+  const hub = new Hub();
+  const at = watching(hub);
+  await at.watch.start();
+  await tell(at, session({ id: "ada" }));
+
+  expect(at.gh.calls.filter((call) => call.args[0] === "auth")).toHaveLength(1);
 });
