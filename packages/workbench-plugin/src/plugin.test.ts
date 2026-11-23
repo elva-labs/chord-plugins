@@ -692,6 +692,30 @@ it("sends the lines the view and viewData helpers stand for", async () => {
   await running;
 });
 
+it("hands the app's greeting to the hello listener, before the sections go", async () => {
+  const { input, output, line, send } = streams();
+  const heard: string[][] = [];
+  const p = plugin({ name: "git", version: "0.1.0" });
+  p.on("hello", (event) => {
+    heard.push(event.projects);
+    p.viewData(event.projects[0]!, { greeted: event.app });
+  });
+  p.section("checks", { title: "Checks", rows: () => [check] });
+  const running = p.run({ input, output });
+  await line(0);
+
+  send({ type: "hello", app: "1.2.0", projects: ["/srv/orbit-api"] });
+  expect(await line(1)).toEqual({
+    type: "view_data",
+    project: "/srv/orbit-api",
+    data: { greeted: "1.2.0" },
+  });
+  expect((await line(2)).type).toBe("section");
+  expect(heard).toEqual([["/srv/orbit-api"]]);
+  input.end();
+  await running;
+});
+
 it("hands what the page sent to the view_message listener", async () => {
   const { input, output, line, send } = streams();
   const heard: unknown[] = [];

@@ -9,6 +9,7 @@ import type {
   DeclaredTool,
   DiffOptions,
   Greeting,
+  HelloEvent,
   Mark,
   OpenOptions,
   PluginMessage,
@@ -98,6 +99,7 @@ export type ActionHandler = (call: ActionContext) => Promise<void> | void;
 
 /** The events a plugin can listen for. */
 export interface Events {
+  hello: HelloEvent;
   project: ProjectEvent;
   session: SessionEvent;
   command: CommandEvent;
@@ -551,6 +553,7 @@ class Builder implements Plugin {
         for (const project of message.projects ?? []) {
           this.#projects.add(project);
         }
+        this.#emit("hello", message);
         await this.#refreshAll();
         return;
       case "project":
