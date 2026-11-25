@@ -1,7 +1,7 @@
 /**
  * The plugin's wiring: the Pull requests section, its actions, the page
- * of reviews asked and what the app tells it, joined to the watch and the
- * offers, over the streams it is given.
+ * of reviews asked, the palette's overview command and what the app tells
+ * it, joined to the watch and the offers, over the streams it is given.
  */
 
 import { plugin, type RunOptions } from "@elva-labs/workbench-plugin";
@@ -68,6 +68,7 @@ export async function serve(options: RunOptions = {}): Promise<void> {
       start: (project, answers, session) => p.start(project, answers, session),
       send: (answers, session, text) => p.send(answers, session, text),
       openUrl: (project, answers, url) => p.openUrl(project, answers, url),
+      offer: (project) => void p.refreshPalette(project),
     },
   });
 
@@ -117,9 +118,24 @@ export async function serve(options: RunOptions = {}): Promise<void> {
     await Promise.all([watch.refresh(), offers.refresh()]);
   });
 
+  // The app hands data only to a page on screen, so the page is opened
+  // before what it shows is sent.
   p.action(SECTION, VIEW, ({ project }) => {
     p.view(project, { html: page(), open: true });
+    offers.everything(project);
   });
+
+  p.palette(
+    "overview",
+    {
+      label: "Pull request overview",
+      when: ({ project }) => offers.offered(project),
+    },
+    ({ project }) => {
+      p.view(project, { html: page(), open: true });
+      offers.overview(project);
+    },
+  );
 
   p.on("hello", (event) => {
     for (const project of event.projects) opened(project);

@@ -94,6 +94,12 @@ function load() {
     "refresh",
     "again",
     "asks",
+    "scope",
+    "scope-text",
+    "all",
+    "mine",
+    "mine-count",
+    "mine-rows",
   ]) {
     byId.set(id, new Element("div"));
   }
@@ -274,4 +280,55 @@ it("lights the pull request a notification named", () => {
   hooks.target?.("pr/b");
   const lit = rows.querySelectorAll(".hl");
   expect(lit.map((one) => one.dataset.key)).toEqual(["b"]);
+});
+
+it("draws an overview's own pull requests, and asks for every repository", () => {
+  const { hooks, byId, sent } = load();
+  hooks.data?.(data([], { repo: "orbit/api", mine: null }));
+  expect(byId.get("mine")?.hidden).toBe(false);
+  expect(byId.get("mine-rows")?.textContent).toBe("Not read yet.");
+  hooks.data?.(
+    data([], {
+      repo: "orbit/api",
+      mine: [
+        {
+          key: "github.com/orbit/api#50",
+          title: "<b>Cache</b>",
+          url: "https://github.com/orbit/api/pull/50",
+          number: 50,
+          head: "cache",
+          draft: false,
+          state: "failed",
+          checks: { failed: 0, passed: 2, running: 0 },
+          review: { kind: "changes", who: ["Grace"] },
+          summary: "changes requested",
+        },
+      ],
+    }),
+  );
+  const mine = byId.get("mine-rows") as Element;
+  expect(mine.textContent).toContain("<b>Cache</b>");
+  expect(mine.textContent).toContain("Changes requested by Grace");
+  expect(byId.get("scope-text")?.textContent).toBe("Showing orbit/api");
+  mine
+    .all()
+    .find((one) => one.tag === "button")
+    ?.click();
+  byId.get("all")?.click();
+  expect(sent.slice(1)).toEqual([
+    { do: "open", key: "github.com/orbit/api#50" },
+    { do: "all" },
+  ]);
+  hooks.data?.(data([]));
+  expect(byId.get("mine")?.hidden).toBe(true);
+  expect(byId.get("scope")?.hidden).toBe(true);
+});
+
+it("looks among every repository for a pull request an overview leaves out", () => {
+  const { hooks, rows, sent } = load();
+  hooks.data?.(data([], { repo: "orbit/api", mine: [] }));
+  hooks.target?.("pr/b");
+  expect(sent.slice(1)).toEqual([{ do: "all" }]);
+  hooks.data?.(data([row({ key: "b" })]));
+  expect(rows.querySelectorAll(".hl")).toHaveLength(1);
 });

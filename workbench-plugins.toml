@@ -33,4 +33,5 @@ build = ["npm", "run", "build"]
 tools = []
 sections = ["Pull requests"]
 view = "wide"
+palette = ["overview"]
 commands = ["gh pr create", "gh pr merge", "gh pr close", "gh pr ready"]

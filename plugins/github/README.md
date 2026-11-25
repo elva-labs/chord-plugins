@@ -139,6 +139,19 @@ The page follows the app's theme. Which session reviewed which pull
 request is kept in `reviews.json` beside the claims, for a month or 200
 pull requests.
 
+## Pull request overview
+
+**Pull request overview** in the app's command palette opens the page for
+the project, showing its repository alone: your open pull requests there,
+the newest 30, then the reviews asked of you there. Each of yours has its
+title, branch, checks, reviewers and a few words on how it stands, and
+opens on GitHub. The reviews asked are those the search above found for the
+host. The command is offered where the project's repository is on a host
+`gh` is signed in to.
+
+Show all repositories, a View row in a fold, and a notification for a pull
+request the overview leaves out bring back every repository.
+
 ## When it reads
 
 Once a minute while any pull request it shows is open, half as long again
@@ -157,6 +170,10 @@ is a repository on github.com or a host `gh` is signed in to. At once when a pro
 opens and on the page's Refresh. A rate limit is the host's, so a host
 paused for one waits for both, and Refresh or Try again on the page lifts
 the pause for both.
+
+Your own pull requests are searched with the reviews asked, one more
+GraphQL call per repository whose overview is open, until its page shows
+all repositories again or the project closes.
 
 ## Hosts
 

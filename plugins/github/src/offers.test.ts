@@ -7,8 +7,11 @@ import {
   failed,
   FakeClock,
   fakeGh,
+  fieldsOf,
+  node,
   ok,
   search,
+  settle,
   type Sought,
 } from "./fake.test-helper.js";
 import {
@@ -47,16 +50,28 @@ interface Said {
   starts: { project: string; answers: string; options: StartOptions }[];
   sends: { answers: string; session: string; text: string }[];
   urls: { project: string; answers: string; url: string }[];
+  offers: string[];
 }
 
 /** Offers over a gh whose search answers what `asked` holds now, with
     /srv/orbit and /srv/orbit-hotfix checkouts of orbit/api and /srv/web
     one of orbit/web. */
-function offers(asked: { nodes: Sought[]; trouble?: string }) {
+function offers(asked: {
+  nodes: Sought[];
+  trouble?: string;
+  mine?: Record<string, unknown>[];
+  signedIn?: string[];
+}) {
   const clock = new FakeClock();
   const gh = fakeGh((call) => {
-    if (call.args[0] === "auth") return ok('{"hosts":{"github.com":[]}}');
+    if (call.args[0] === "auth") {
+      const hosts = (asked.signedIn ?? ["github.com"]).map((h) => [h, []]);
+      return ok(JSON.stringify({ hosts: Object.fromEntries(hosts) }));
+    }
     if (asked.trouble !== undefined) return failed(asked.trouble);
+    if (call.args.join(" ").includes("author:@me")) {
+      return ok(JSON.stringify({ data: { search: { nodes: asked.mine } } }));
+    }
     return ok(search(asked.nodes));
   });
   const said: Said = {
@@ -66,6 +81,7 @@ function offers(asked: { nodes: Sought[]; trouble?: string }) {
     starts: [],
     sends: [],
     urls: [],
+    offers: [],
   };
   const pauses = new Pauses();
   const reviews = new Reviews(join(dir, "reviews.json"));
@@ -92,6 +108,7 @@ function offers(asked: { nodes: Sought[]; trouble?: string }) {
         said.sends.push({ answers, session, text }),
       openUrl: (project, answers, url) =>
         said.urls.push({ project, answers, url }),
+      offer: (project) => said.offers.push(project),
     },
   });
   return { offers: made, said, clock, gh, pauses, reviews };
@@ -511,4 +528,78 @@ it("sends a page that has loaded what it shows, and a refresh asked from it", as
 it("aims a notification at the pull request's row while its target fits", () => {
   expect(targetOf(KEY)).toBe(`pr/${KEY}`);
   expect(targetOf("x".repeat(300))).toBe("asks");
+});
+
+it("offers the overview where the repository is on a host gh is signed in to", async () => {
+  const { offers: o, said } = offers({ nodes: [] });
+  await o.start();
+  await o.opened(API);
+  expect(said.offers).toEqual([API]);
+  expect(await o.offered(API)).toBe(true);
+  expect(await o.offered("/srv/elsewhere")).toBe(false);
+
+  const out = offers({ nodes: [], signedIn: [] });
+  await out.offers.start();
+  await out.offers.opened(API);
+  expect(await out.offers.offered(API)).toBe(false);
+});
+
+it("shows a project's repository alone as its overview, with the user's own pull requests, until asked for all", async () => {
+  const web = { host: "github.com", owner: "orbit", name: "web" };
+  const {
+    offers: o,
+    said,
+    gh,
+  } = offers({
+    nodes: [{ number: 42 }, { number: 5, repo: web }],
+    mine: [
+      node({
+        number: 50,
+        title: "Cache the `token`",
+        checks: [{ name: "lint", conclusion: "FAILURE" }],
+        rollup: "FAILURE",
+      }),
+    ],
+  });
+  await o.start();
+  await o.opened(API);
+  await o.opened(WEB);
+  const searches = () =>
+    gh.calls
+      .map((call) => fieldsOf(call.args).get("q") ?? "")
+      .filter((q) => q.includes("author:@me"));
+  expect(searches()).toEqual([]);
+
+  o.overview(API);
+  expect(said.pages.get(API)).toMatchObject({ repo: "orbit/api", mine: null });
+  await settle();
+  expect(searches()).toEqual([
+    "is:pr is:open author:@me repo:orbit/api sort:created-desc",
+  ]);
+  const page = said.pages.get(API)!;
+  expect(page.rows.map((row) => row.key)).toEqual([KEY]);
+  expect(page.mine).toMatchObject([
+    {
+      key: "github.com/orbit/api#50",
+      title: "Cache the 'token'",
+      state: "failed",
+      checks: { failed: 1, passed: 0, running: 0 },
+      summary: "a check failed",
+    },
+  ]);
+  expect(said.pages.get(WEB)?.repo).toBeUndefined();
+  expect(said.pages.get(WEB)?.rows).toHaveLength(2);
+
+  o.message(API, { do: "open", key: "github.com/orbit/api#50" }, "c1");
+  expect(said.urls).toEqual([
+    {
+      project: API,
+      answers: "c1",
+      url: "https://github.com/orbit/api/pull/50",
+    },
+  ]);
+
+  o.message(API, { do: "all" }, null);
+  expect(said.pages.get(API)?.mine).toBeUndefined();
+  expect(said.pages.get(API)?.rows).toHaveLength(2);
 });

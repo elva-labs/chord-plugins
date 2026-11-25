@@ -211,6 +211,18 @@ for (const plugin of declared) {
     if (!plain(tool))
       problems.push(`${name}: the tool ${tool} must be a plain identifier`);
   }
+  const palette = plugin.palette ?? [];
+  for (const command of palette) {
+    if (!plain(command))
+      problems.push(
+        `${name}: the palette command ${command} must be a plain identifier`,
+      );
+  }
+  if (palette.length > 8 || new Set(palette).size !== palette.length) {
+    problems.push(
+      `${name}: palette names at most 8 commands, none of them twice`,
+    );
+  }
   if (
     plugin.view !== undefined &&
     plugin.view !== "wide" &&
