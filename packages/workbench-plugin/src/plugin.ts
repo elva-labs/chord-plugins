@@ -12,6 +12,8 @@ import type {
   HelloEvent,
   Mark,
   OpenOptions,
+  PaletteCommand,
+  PickCall,
   PluginMessage,
   PresentOptions,
   ProjectEvent,
@@ -97,6 +99,39 @@ export interface ActionContext {
 /** An action's handler. What it throws is shown to the user. */
 export type ActionHandler = (call: ActionContext) => Promise<void> | void;
 
+/** The project a palette command is offered for. */
+export interface PaletteContext {
+  project: string;
+}
+
+/** A command in the app's palette. */
+export interface PaletteOptions {
+  /** What the palette calls it: one line of 60 characters at most that
+      starts with a capital or a digit. The app lists no command named like
+      one of its own. */
+  label: string;
+  /** Whether the command is offered for a project, asked when the project
+      opens and on each `refreshPalette`. A command without it is offered
+      for every project, and one whose `when` throws is not offered. */
+  when?: (context: PaletteContext) => Promise<boolean> | boolean;
+}
+
+/** The pick of a palette command: its id, the project that was on screen,
+    and the session the user had in front of them or null. */
+export interface PickContext {
+  id: string;
+  project: string;
+  session: string | null;
+  /** Opens a web address in the user's browser, once per pick and only
+      while the handler runs. An address that is not http or https is
+      refused. */
+  openUrl(url: string): void;
+}
+
+/** A palette command's handler. The app waits 10 seconds for it. What it
+    throws is shown to the user. */
+export type PickHandler = (pick: PickContext) => Promise<void> | void;
+
 /** The events a plugin can listen for. */
 export interface Events {
   hello: HelloEvent;
@@ -123,6 +158,9 @@ export interface Plugin {
   section(id: string, options: SectionOptions): Plugin;
   /** Registers what one of a section's actions does. */
   action(section: string, action: string, handler: ActionHandler): Plugin;
+  /** Registers a command in the app's palette, which the manifest lists
+      under `palette`, and what picking it does. */
+  palette(id: string, options: PaletteOptions, handler: PickHandler): Plugin;
   /** Listens for one of the app's events. */
   on<K extends keyof Events>(
     event: K,
@@ -135,6 +173,9 @@ export interface Plugin {
     project: string,
     session?: string | null,
   ): Promise<void>;
+  /** Asks each palette command's `when` about an open project again, and
+      sends the project's commands when they differ from the last sent. */
+  refreshPalette(project: string): Promise<void>;
   /** Opens a place in the viewer. */
   open(project: string, place: OpenOptions): void;
   /** Shows a file's diff. */
@@ -187,6 +228,15 @@ const TEXT_MAX = 4 * 1024;
 
 /** The longest ref, agent title and notification target, in bytes. */
 const TAG_MAX = 256;
+
+/** The most palette commands a plugin declares. */
+const PALETTE_MAX = 8;
+
+/** The longest label of a palette command, in characters. */
+const LABEL_MAX = 60;
+
+/** How a label begins: a digit, or a letter that is not lowercase. */
+const LABEL_START = /^(?!\p{Ll})[\p{L}\p{N}]/u;
 
 /** Characters that draw nothing, which the app passes over before it
     looks at how a prompt begins. */
@@ -250,6 +300,19 @@ function checkName(what: string, name: string): void {
   }
 }
 
+function checkLabel(label: string): void {
+  if (
+    !LABEL_START.test(label) ||
+    /[\r\n\u2028\u2029]/.test(label) ||
+    [...label].length > LABEL_MAX
+  ) {
+    throw new Error(
+      `the label ${JSON.stringify(label)} must be one line of ${LABEL_MAX} ` +
+        "characters at most that starts with a capital or a digit",
+    );
+  }
+}
+
 /** Content of any shape reaches the agent as text. */
 function content(value: unknown): string {
   if (typeof value === "string") return value;
@@ -275,6 +338,33 @@ interface Section {
   rows: SectionOptions["rows"];
 }
 
+interface Palette {
+  options: PaletteOptions;
+  handler: PickHandler;
+}
+
+/** An opener for one call the app answers to: it writes one `open_url`
+    line, only while the call is unanswered. */
+function opener(
+  call: "action" | "pick",
+  answered: () => boolean,
+  write: (url: string) => void,
+): (url: string) => void {
+  let opened = false;
+  return (url) => {
+    if (answered()) throw new Error(`the ${call} has already been answered`);
+    if (opened) {
+      const one = call === "action" ? "an action" : "a pick";
+      throw new Error(`${one} opens one web address`);
+    }
+    if (!openable(url)) {
+      throw new Error(`not a web address the app opens: ${url}`);
+    }
+    opened = true;
+    write(url);
+  };
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -292,6 +382,13 @@ class Builder implements Plugin {
   /** The rows each section last sent, by project and session, so an
       action knows its row. */
   readonly #rows = new Map<string, Map<string, Row[]>>();
+  readonly #palette = new Map<string, Palette>();
+  /** The commands last sent for each open project, as one string. */
+  readonly #offered = new Map<string, string>();
+  /** The latest look at each project's commands, so an older one that
+      finishes late sends nothing. */
+  readonly #looks = new Map<string, number>();
+  #look = 0;
   #output: Writable | null = null;
   #stop: (() => void) | null = null;
 
@@ -354,6 +451,29 @@ class Builder implements Plugin {
     return this;
   }
 
+  palette(id: string, options: PaletteOptions, handler: PickHandler): Plugin {
+    checkName("palette command", id);
+    checkLabel(options.label);
+    if (this.#palette.has(id)) {
+      throw new Error(
+        `the palette command ${JSON.stringify(id)} is registered twice`,
+      );
+    }
+    const label = options.label.toLowerCase();
+    for (const other of this.#palette.values()) {
+      if (other.options.label.toLowerCase() === label) {
+        throw new Error(
+          `two palette commands are called ${JSON.stringify(options.label)}`,
+        );
+      }
+    }
+    if (this.#palette.size === PALETTE_MAX) {
+      throw new Error(`a plugin has ${PALETTE_MAX} palette commands at most`);
+    }
+    this.#palette.set(id, { options, handler });
+    return this;
+  }
+
   on<K extends keyof Events>(
     event: K,
     handler: (event: Events[K]) => unknown,
@@ -395,6 +515,28 @@ class Builder implements Plugin {
       ...(detail === "" ? {} : { detail }),
       ...(registered.declared.folded === true ? { folded: true } : {}),
     });
+  }
+
+  async refreshPalette(project: string): Promise<void> {
+    if (this.#palette.size === 0 || !this.#projects.has(project)) return;
+    const look = ++this.#look;
+    this.#looks.set(project, look);
+    const found = await Promise.all(
+      [...this.#palette].map(async ([id, { options }]) => {
+        try {
+          if (options.when && !(await options.when({ project }))) return null;
+        } catch {
+          return null;
+        }
+        return { id, label: options.label };
+      }),
+    );
+    if (this.#looks.get(project) !== look) return;
+    const commands: PaletteCommand[] = found.filter((one) => one !== null);
+    const said = JSON.stringify(commands);
+    if (this.#offered.get(project) === said) return;
+    this.#offered.set(project, said);
+    this.#write({ type: "palette", project, commands });
   }
 
   open(project: string, place: OpenOptions): void {
@@ -553,8 +695,12 @@ class Builder implements Plugin {
         for (const project of message.projects ?? []) {
           this.#projects.add(project);
         }
+        this.#offered.clear();
         this.#emit("hello", message);
-        await this.#refreshAll();
+        await Promise.all([
+          this.#refreshAll(),
+          ...[...this.#projects].map((one) => this.refreshPalette(one)),
+        ]);
         return;
       case "project":
         await this.#project(message);
@@ -580,6 +726,9 @@ class Builder implements Plugin {
       case "action":
         await this.#action(message);
         return;
+      case "pick":
+        await this.#pick(message);
+        return;
       default:
         return;
     }
@@ -590,6 +739,11 @@ class Builder implements Plugin {
       this.#projects.add(event.path);
     } else {
       this.#projects.delete(event.path);
+      this.#looks.delete(event.path);
+      this.#offered.delete(event.path);
+      if (this.#palette.size > 0) {
+        this.#write({ type: "palette", project: event.path, commands: [] });
+      }
       for (const kept of this.#rows.values()) {
         for (const key of kept.keys()) {
           if (key === event.path || key.startsWith(`${event.path}\u0000`)) {
@@ -598,13 +752,15 @@ class Builder implements Plugin {
         }
       }
     }
+    if (event.event === "opened") this.#offered.delete(event.path);
     this.#emit("project", event);
     if (event.event !== "opened") return;
-    await Promise.all(
-      [...this.#sections.keys()].map((section) =>
+    await Promise.all([
+      ...[...this.#sections.keys()].map((section) =>
         this.refresh(section, event.path),
       ),
-    );
+      this.refreshPalette(event.path),
+    ]);
   }
 
   async #refreshAll(): Promise<void> {
@@ -650,21 +806,17 @@ class Builder implements Plugin {
     }
     const session = call.session || null;
     let answered = false;
-    let opened = false;
-    const openUrl = (url: string): void => {
-      if (answered) throw new Error("the action has already been answered");
-      if (opened) throw new Error("an action opens one web address");
-      if (!openable(url)) {
-        throw new Error(`not a web address the app opens: ${url}`);
-      }
-      opened = true;
-      this.#write({
-        type: "open_url",
-        project: call.project,
-        action: call.id,
-        url,
-      });
-    };
+    const openUrl = opener(
+      "action",
+      () => answered,
+      (url) =>
+        this.#write({
+          type: "open_url",
+          project: call.project,
+          action: call.id,
+          url,
+        }),
+    );
     try {
       await handler({
         row: this.#rowOf(call.section, call.project, session, call.row),
@@ -680,6 +832,43 @@ class Builder implements Plugin {
       this.#write({ type: "result", id: call.id, error: reason(error) });
     } finally {
       await this.refresh(call.section, call.project, session);
+    }
+  }
+
+  async #pick(pick: { type: "pick" } & PickCall): Promise<void> {
+    const command = this.#palette.get(pick.command);
+    if (!command) {
+      this.#write({
+        type: "result",
+        id: pick.id,
+        error: `no such palette command: ${pick.command}`,
+      });
+      return;
+    }
+    let answered = false;
+    const openUrl = opener(
+      "pick",
+      () => answered,
+      (url) =>
+        this.#write({
+          type: "open_url",
+          project: pick.project,
+          answers: pick.id,
+          url,
+        }),
+    );
+    try {
+      await command.handler({
+        id: pick.id,
+        project: pick.project,
+        session: pick.session || null,
+        openUrl,
+      });
+      answered = true;
+      this.#write({ type: "result", id: pick.id });
+    } catch (error) {
+      answered = true;
+      this.#write({ type: "result", id: pick.id, error: reason(error) });
     }
   }
 

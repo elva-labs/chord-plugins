@@ -76,6 +76,17 @@ p.run();
   section is sent again once it is done. `openUrl(url)` on what the handler
   is given opens one http or https address in the user's browser for that
   action, which is the only time the app opens one.
+- `palette(id, { label, when }, handler)` registers a command in the app's
+  palette, whose id the manifest lists under `palette`, eight at most. The
+  label is one line of 60 characters at most that starts with a capital or a
+  digit, and the app lists none named like a command of its own. The
+  commands are sent for each project that is open, leaving out those whose
+  `when({ project })` says no, and taken away when it closes.
+  `refreshPalette(project)` asks `when` again. The handler is given the
+  pick's `id`, `project`, the session in front or null, and
+  `openUrl(url)`; `start`, `send` and `view` with `open: true` act on it
+  too, with the `id` where one is asked for. The app waits 10 seconds, and
+  what the handler throws is shown to the user.
 - `on(event, handler)` listens for a project opening or closing, a session
   starting, changing state or ending, a tree that moved, a message from the
   plugin's page, a command a session ran that the manifest's `commands`
