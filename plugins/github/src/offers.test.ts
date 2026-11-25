@@ -61,16 +61,30 @@ function offers(asked: {
   trouble?: string;
   mine?: Record<string, unknown>[];
   signedIn?: string[];
+  /** What the search of the user's own pull requests says in its place. */
+  mineTrouble?: string;
+  remaining?: number;
+  authFails?: boolean;
 }) {
   const clock = new FakeClock();
   const gh = fakeGh((call) => {
     if (call.args[0] === "auth") {
+      if (asked.authFails === true) return failed("network is unreachable");
       const hosts = (asked.signedIn ?? ["github.com"]).map((h) => [h, []]);
       return ok(JSON.stringify({ hosts: Object.fromEntries(hosts) }));
     }
     if (asked.trouble !== undefined) return failed(asked.trouble);
     if (call.args.join(" ").includes("author:@me")) {
-      return ok(JSON.stringify({ data: { search: { nodes: asked.mine } } }));
+      if (asked.mineTrouble !== undefined) return failed(asked.mineTrouble);
+      const rateLimit = {
+        remaining: asked.remaining ?? 4800,
+        resetAt: "2026-11-20T10:40:00Z",
+      };
+      return ok(
+        JSON.stringify({
+          data: { rateLimit, search: { nodes: asked.mine ?? [] } },
+        }),
+      );
     }
     return ok(search(asked.nodes));
   });
@@ -602,4 +616,96 @@ it("shows a project's repository alone as its overview, with the user's own pull
   o.message(API, { do: "all" }, null);
   expect(said.pages.get(API)?.mine).toBeUndefined();
   expect(said.pages.get(API)?.rows).toHaveLength(2);
+});
+
+const authCalls = (gh: { calls: { args: string[] }[] }) =>
+  gh.calls.filter((call) => call.args[0] === "auth").length;
+
+it("asks gh for its hosts once, however many projects ask at once", async () => {
+  const { offers: o, gh } = offers({ nodes: [] });
+  await o.start();
+  await Promise.all([o.opened(API), o.opened(WEB), o.opened(HOTFIX)]);
+  await Promise.all([API, WEB, HOTFIX].map((one) => o.offered(one)));
+  expect(authCalls(gh)).toBe(1);
+
+  await o.refresh();
+  await Promise.all([API, WEB, HOTFIX].map((one) => o.offered(one)));
+  expect(authCalls(gh)).toBe(2);
+});
+
+it("keeps what gh last said of its hosts while it cannot say, and withdraws the overview after a sign-out", async () => {
+  const asked: Parameters<typeof offers>[0] = { nodes: [] };
+  const { offers: o, said } = offers(asked);
+  await o.start();
+  await o.opened(API);
+  expect(await o.offered(API)).toBe(true);
+
+  asked.authFails = true;
+  await o.refresh();
+  expect(await o.offered(API)).toBe(true);
+
+  asked.authFails = false;
+  asked.signedIn = [];
+  said.offers.length = 0;
+  await o.refresh();
+  expect(said.offers).toEqual([API]);
+  expect(await o.offered(API)).toBe(false);
+});
+
+it("keeps an overview's repository on its page while a Refresh reads the remotes again", async () => {
+  const { offers: o, said } = offers({ nodes: [{ number: 42 }] });
+  await o.start();
+  await o.opened(API);
+  o.overview(API);
+  await settle();
+
+  const reading = o.refresh();
+  o.told("s1", API, null);
+  expect(said.pages.get(API)?.repo).toBe("orbit/api");
+  expect(said.pages.get(API)?.rows).toHaveLength(1);
+  await reading;
+});
+
+it("drops a project's overview when it closes", async () => {
+  const { offers: o, said } = offers({ nodes: [] });
+  await o.start();
+  await o.opened(API);
+  o.overview(API);
+  await settle();
+  o.closed(API);
+  await o.opened(API);
+  expect(said.pages.get(API)?.repo).toBeUndefined();
+});
+
+it("says an overview's own search is rate limited, and leaves the host alone", async () => {
+  const {
+    offers: o,
+    said,
+    pauses,
+    clock,
+  } = offers({ nodes: [], mineTrouble: "API rate limit exceeded" });
+  await o.start();
+  await o.opened(API);
+  o.overview(API);
+  await settle();
+  expect(said.pages.get(API)?.trouble).toMatch(/^Rate limited on github.com/);
+  const until = pauses.until("github.com", clock.now());
+  expect(until).not.toBeNull();
+
+  await o.opened(WEB);
+  expect(pauses.until("github.com", clock.now())).toBe(until);
+});
+
+it("leaves a host alone when an overview's own search says few calls are left", async () => {
+  const { offers: o, gh, pauses, clock } = offers({ nodes: [], remaining: 5 });
+  await o.start();
+  await o.opened(API);
+  o.overview(API);
+  await settle();
+  expect(pauses.until("github.com", clock.now())).toBe(
+    Date.parse("2026-11-20T10:40:01Z"),
+  );
+  const before = gh.calls.length;
+  await o.opened(WEB);
+  expect(gh.calls).toHaveLength(before);
 });

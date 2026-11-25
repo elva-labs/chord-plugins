@@ -194,6 +194,10 @@ export class Offers {
   readonly #refused = new Set<string>();
   #signed: Set<string> | null = null;
   #signedAt = 0;
+  /** The call to gh asking for its hosts, while one is on its way. */
+  #asking: Promise<void> | null = null;
+  /** Whether every project's repository is to be read again. */
+  #replace = false;
   #updated: number | null = null;
   readonly schedule: Schedule;
 
@@ -265,8 +269,9 @@ export class Offers {
       so this lifts a searched host's pause for the pull requests' reads
       as well. */
   refresh(): Promise<void> {
-    this.#places.clear();
-    this.#signed = null;
+    this.#replace = true;
+    this.#signedAt = -Infinity;
+    this.#asking = null;
     for (const host of this.#hosts.keys()) this.#pauses.lift(host);
     return this.schedule.now();
   }
@@ -718,13 +723,17 @@ export class Offers {
     this.#out.data(project, data);
   }
 
-  /** Reads the repository of every open project not read yet. */
+  /** Reads the repository of every open project not read yet, and of
+      every one after a Refresh. What was read before stands until then. */
   async #placeAll(): Promise<void> {
+    const every = this.#replace;
+    this.#replace = false;
     await Promise.all(
       this.#projects
-        .filter((project) => !this.#places.has(project))
+        .filter((project) => every || !this.#places.has(project))
         .map(async (project) => {
           const listing = await this.#remotes(project).catch(() => "");
+          if (!this.#projects.includes(project)) return;
           this.#places.set(project, placeOf(listing));
         }),
     );
@@ -748,24 +757,38 @@ export class Offers {
     return hosts;
   }
 
-  /** The hosts gh says it is signed in to, as it said within HOSTS_MS. */
+  /** The hosts gh says it is signed in to, as it said within HOSTS_MS.
+      Everyone asking at once waits on one call, and while gh cannot say,
+      what it said last holds. */
   async #signedIn(now: number): Promise<ReadonlySet<string>> {
     if (this.#signed !== null && now - this.#signedAt < HOSTS_MS) {
       return this.#signed;
     }
-    let hosts: unknown;
+    if (this.#asking === null) {
+      const asking: Promise<void> = this.#askHosts().then((hosts) => {
+        // A Refresh leaves an earlier call's answer behind.
+        if (this.#asking !== asking) return;
+        this.#asking = null;
+        if (hosts === null) return;
+        this.#signed = hosts;
+        this.#signedAt = now;
+      });
+      this.#asking = asking;
+    }
+    await this.#asking;
+    return this.#signed ?? new Set();
+  }
+
+  /** The hosts `gh auth status` lists, or null when it could not say. */
+  async #askHosts(): Promise<Set<string> | null> {
     try {
       const run = await this.#gh(["auth", "status", "--json", "hosts"]);
-      hosts = (JSON.parse(run.stdout) as { hosts?: unknown }).hosts;
+      const { hosts } = JSON.parse(run.stdout) as { hosts?: unknown };
+      if (typeof hosts !== "object" || hosts === null) return null;
+      return new Set(Object.keys(hosts).map((host) => host.toLowerCase()));
     } catch {
-      hosts = null;
+      return null;
     }
-    if (typeof hosts !== "object" || hosts === null) return new Set();
-    this.#signed = new Set(
-      Object.keys(hosts).map((host) => host.toLowerCase()),
-    );
-    this.#signedAt = now;
-    return this.#signed;
   }
 }
 

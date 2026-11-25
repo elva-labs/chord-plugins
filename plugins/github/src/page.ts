@@ -411,7 +411,7 @@ const SCRIPT = `
     var rows = Array.isArray(shown.rows) ? shown.rows : [];
     countEl.textContent = String(rows.length);
     rowsEl.replaceChildren();
-    if (rows.length === 0) rowsEl.appendChild(emptyOf("tick", "No reviews asked of you."));
+    if (rows.length === 0) rowsEl.appendChild(emptyOf("tick", scoped() ? "No reviews asked of you here." : "No reviews asked of you."));
     drawMine();
     rows.forEach(function (row) { rowsEl.appendChild(rowOf(row)); });
     aim();

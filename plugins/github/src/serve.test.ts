@@ -38,7 +38,7 @@ beforeEach(async () => {
       "esac",
       'case "$1 $2" in',
       `  "api graphql") echo "api $GH_HOST" >> "${dir}/calls"; cat "${dir}/answer.json" ;;`,
-      `  "auth status") echo '{"hosts":{"github.com":[]}}' ;;`,
+      `  "auth status") cat "${dir}/auth.json" ;;`,
       `  "pr merge") echo "merge $GH_HOST $*" >> "${dir}/calls" ;;`,
       "  *) exit 1 ;;",
       "esac",
@@ -46,6 +46,7 @@ beforeEach(async () => {
     ].join("\n"),
     { mode: 0o755 },
   );
+  await writeFile(join(dir, "auth.json"), '{"hosts":{"github.com":[]}}');
 });
 
 afterEach(async () => {
@@ -280,6 +281,22 @@ it("offers the reviews asked of you on the page, starts one through the app's ca
   expect(overview.line.data.repo).toBe("orbit/api");
 
   app.send({
+    type: "action",
+    id: "v1",
+    section: "pulls",
+    action: "view",
+    row: null,
+    input: {},
+    project: repo,
+    session: null,
+  });
+  const everything = await app.find(
+    (line) => line.type === "view_data" && line.data.repo === undefined,
+    overview.at,
+  );
+  expect(everything.line.data.mine).toBeUndefined();
+
+  app.send({
     type: "view_message",
     project: repo,
     payload: { do: "start", key: KEY },
@@ -377,6 +394,14 @@ it("offers the reviews asked of you on the page, starts one through the app's ca
   });
   expect(anew.line.prompt).toContain("again");
   expect(await calls()).toContain("search github.com");
+
+  await writeFile(join(dir, "auth.json"), '{"hosts":{}}');
+  app.send({ type: "view_message", project: repo, payload: { do: "refresh" } });
+  const withdrawn = await app.find(
+    (line) => line.type === "palette" && line.commands.length === 0,
+    anew.at,
+  );
+  expect(withdrawn.line.project).toBe(repo);
 
   app.send({ type: "stop" });
   await done;

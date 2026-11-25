@@ -287,6 +287,9 @@ it("draws an overview's own pull requests, and asks for every repository", () =>
   hooks.data?.(data([], { repo: "orbit/api", mine: null }));
   expect(byId.get("mine")?.hidden).toBe(false);
   expect(byId.get("mine-rows")?.textContent).toBe("Not read yet.");
+  expect(byId.get("rows")?.textContent).toContain(
+    "No reviews asked of you here.",
+  );
   hooks.data?.(
     data([], {
       repo: "orbit/api",

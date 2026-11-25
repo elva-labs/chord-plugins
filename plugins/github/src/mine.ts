@@ -4,7 +4,7 @@
  * come out of here as plain words, as the reviews asked do.
  */
 
-import { repoKey, urlOf, type Repo } from "./address.js";
+import { urlOf, type Repo } from "./address.js";
 import { Missing, type Gh, type Trouble } from "./gh.js";
 import {
   failedOf,
@@ -70,7 +70,7 @@ export async function readMine(
   const pulls: Pull[] = [];
   for (const node of Array.isArray(nodes) ? nodes : []) {
     const pull = pullOf(repo, node);
-    if (pull === null || repoKey(pull) !== repoKey(repo)) continue;
+    if (pull === null) continue;
     pulls.push({
       ...pull,
       title: plain(pull.title, TITLE_MAX) || `#${pull.number}`,

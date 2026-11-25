@@ -147,7 +147,10 @@ the newest 30, then the reviews asked of you there. Each of yours has its
 title, branch, checks, reviewers and a few words on how it stands, and
 opens on GitHub. The reviews asked are those the search above found for the
 host. The command is offered where the project's repository is on a host
-`gh` is signed in to.
+`gh` is signed in to, which an expired token still counts as. Signing in to
+a GitHub Enterprise host brings the command only after a read, and nothing
+reads on a timer while no open project is on a host that is searched, so
+use Refresh then.
 
 Show all repositories, a View row in a fold, and a notification for a pull
 request the overview leaves out bring back every repository.
@@ -182,7 +185,8 @@ address, and a branch's is the one in the checkout's remote, given to `gh`
 as `--hostname` or `GH_HOST`. A branch is only looked up on a host `gh auth
 status` lists, so a remote on a host you never signed in to costs nothing.
 What `gh auth status` said holds for ten minutes, so signing in to a host
-is noticed within that, or at once on Refresh. While a worktree's remote is
+is noticed within that while something is being read, or at once on
+Refresh. While a worktree's remote is
 on a host `gh` is not signed in to, it is asked again every ten minutes, at
 most three times, and then not until Refresh.
 
