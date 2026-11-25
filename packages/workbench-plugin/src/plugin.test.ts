@@ -1,5 +1,5 @@
 import { PassThrough, Writable } from "node:stream";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { plugin } from "./plugin.js";
 import type { ActionContext, Row } from "./index.js";
 
@@ -924,8 +924,8 @@ it("refuses a view that is neither wide nor full", () => {
   ).toThrow(/wide or full/);
 });
 
-it("sends a project's palette commands when the app greets it and when it opens, and empties them when it closes", async () => {
-  const { input, output, line, send } = streams();
+it("sends a project's palette commands when the app greets it and when it opens, and nothing when it closes", async () => {
+  const { input, output, all, line, send } = streams();
   const p = plugin({ name: "github", version: "0.2.0" });
   p.palette("overview", { label: "Pull request overview" }, () => {});
   p.palette(
@@ -963,11 +963,12 @@ it("sends a project's palette commands when the app greets it and when it opens,
   });
 
   send({ type: "project", event: "closed", path: "/srv/orbit-web" });
-  expect(await line(3)).toEqual({
-    type: "palette",
-    project: "/srv/orbit-web",
-    commands: [],
-  });
+  await new Promise((wake) => setImmediate(wake));
+  await p.refreshPalette("/srv/orbit-web");
+  expect(all).toHaveLength(3);
+
+  send({ type: "project", event: "opened", path: "/srv/orbit-web" });
+  expect(await line(3)).toMatchObject({ commands: [overview] });
   input.end();
   await running;
 });
@@ -1022,13 +1023,12 @@ it("sends nothing from a look that a later one or a closing project overtook", a
 
   const last = p.refreshPalette("/srv/orbit-api");
   send({ type: "project", event: "closed", path: "/srv/orbit-api" });
-  await line(2);
-  asked[2]!(true);
+  await new Promise((wake) => setImmediate(wake));
+  asked[2]!(false);
   await last;
 
   expect(all.slice(1).map((one) => JSON.parse(one).commands)).toEqual([
     [{ id: "overview", label: "Pull request overview" }],
-    [],
   ]);
   input.end();
   await running;
@@ -1115,4 +1115,85 @@ it("refuses a palette command the app would not list", () => {
   expect(add("same", "2 REVIEWS")).toThrow("two palette commands");
   for (let at = 1; at < 8; at += 1) add(`c${at}`, `Command ${at}`)();
   expect(add("c8", "One too many")).toThrow("8 palette commands at most");
+});
+
+it("answers a pick whose command hangs with an error, once, and ignores what comes of it after", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const { input, output, all, line, send } = streams();
+    let finish: () => void = () => {};
+    let late: (url: string) => void = () => {};
+    const p = plugin({ name: "github", version: "0.2.0" });
+    p.palette("overview", { label: "Pull request overview" }, (pick) => {
+      late = pick.openUrl;
+      return new Promise<void>((resolve) => (finish = resolve));
+    });
+    const running = p.run({ input, output });
+    await line(0);
+    send({
+      type: "pick",
+      id: "p1",
+      command: "overview",
+      project: "/srv/orbit-api",
+    });
+    await new Promise((wake) => setImmediate(wake));
+    await vi.advanceTimersByTimeAsync(8_999);
+    expect(all).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await line(1)).toEqual({
+      type: "result",
+      id: "p1",
+      error: "the command did not finish in time",
+    });
+    expect(() => late("https://github.com/")).toThrow(
+      "the pick has already been answered",
+    );
+    finish();
+    await new Promise((wake) => setImmediate(wake));
+    expect(all).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+    input.end();
+    await running;
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("answers a second pick while the first is still running", async () => {
+  const { input, output, line, send } = streams();
+  const finish = new Map<string, () => void>();
+  const p = plugin({ name: "github", version: "0.2.0" });
+  p.palette(
+    "overview",
+    { label: "Pull request overview" },
+    (pick) => new Promise<void>((resolve) => finish.set(pick.id, resolve)),
+  );
+  const running = p.run({ input, output });
+  await line(0);
+  for (const id of ["p1", "p2"]) {
+    send({ type: "pick", id, command: "overview", project: "/srv/orbit-api" });
+  }
+  await new Promise((wake) => setImmediate(wake));
+  finish.get("p2")!();
+  expect(await line(1)).toEqual({ type: "result", id: "p2" });
+  finish.get("p1")!();
+  expect(await line(2)).toEqual({ type: "result", id: "p1" });
+  input.end();
+  await running;
+});
+
+it("judges a palette label as the app reads it", () => {
+  const p = plugin({ name: "github", version: "0.2.0" });
+  const long = `Pull${" ".repeat(70)}request`;
+  p.palette("overview", { label: long }, () => {});
+  for (const twin of ["Pull request", "pull request", "Pull\u200b  request"]) {
+    expect(() => p.palette("twin", { label: twin }, () => {})).toThrow();
+  }
+  expect(() => p.palette("twin", { label: "Pull request" }, () => {})).toThrow(
+    "two palette commands",
+  );
+  for (const label of ["\u00aa list", "\u200blist", "\u200b"]) {
+    expect(() => p.palette("bad", { label }, () => {})).toThrow(/capital/);
+  }
+  p.palette("hidden", { label: "\u200bOpen board" }, () => {});
 });

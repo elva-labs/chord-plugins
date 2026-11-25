@@ -236,7 +236,16 @@ const PALETTE_MAX = 8;
 const LABEL_MAX = 60;
 
 /** How a label begins: a digit, or a letter that is not lowercase. */
-const LABEL_START = /^(?!\p{Ll})[\p{L}\p{N}]/u;
+const LABEL_START = /^(?!\p{Lowercase})[\p{Alphabetic}\p{N}]/u;
+
+/** The characters the app takes out of a label before it judges it: the
+    controls, the format characters and the ones that draw nothing. */
+const UNLABELLED =
+  /[\p{Cc}\u00AD\u034F\u0600-\u0605\u061C\u06DD\u070F\u0890-\u0891\u08E2\u115F-\u1160\u17B4-\u17B5\u180B-\u180F\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF0-\uFFFB\u{110BD}\u{110CD}\u{13430}-\u{1343F}\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{E0000}-\u{E0FFF}]/gu;
+
+/** How long a pick's handler has, in milliseconds, which is short of the
+    10 seconds the app waits for the result. */
+const PICK_MS = 9_000;
 
 /** Characters that draw nothing, which the app passes over before it
     looks at how a prompt begins. */
@@ -300,11 +309,23 @@ function checkName(what: string, name: string): void {
   }
 }
 
+/** A label as the app reads it: no character that draws nothing, and one
+    space wherever there is white space. */
+function shownLabel(label: string): string {
+  return label
+    .replace(/\p{White_Space}/gu, " ")
+    .replace(UNLABELLED, "")
+    .split(" ")
+    .filter(Boolean)
+    .join(" ");
+}
+
 function checkLabel(label: string): void {
+  const shown = shownLabel(label);
   if (
-    !LABEL_START.test(label) ||
+    !LABEL_START.test(shown) ||
     /[\r\n\u2028\u2029]/.test(label) ||
-    [...label].length > LABEL_MAX
+    [...shown].length > LABEL_MAX
   ) {
     throw new Error(
       `the label ${JSON.stringify(label)} must be one line of ${LABEL_MAX} ` +
@@ -459,9 +480,9 @@ class Builder implements Plugin {
         `the palette command ${JSON.stringify(id)} is registered twice`,
       );
     }
-    const label = options.label.toLowerCase();
+    const label = shownLabel(options.label).toLowerCase();
     for (const other of this.#palette.values()) {
-      if (other.options.label.toLowerCase() === label) {
+      if (shownLabel(other.options.label).toLowerCase() === label) {
         throw new Error(
           `two palette commands are called ${JSON.stringify(options.label)}`,
         );
@@ -737,13 +758,11 @@ class Builder implements Plugin {
   async #project(event: ProjectEvent): Promise<void> {
     if (event.event === "opened") {
       this.#projects.add(event.path);
+      this.#offered.delete(event.path);
     } else {
       this.#projects.delete(event.path);
       this.#looks.delete(event.path);
       this.#offered.delete(event.path);
-      if (this.#palette.size > 0) {
-        this.#write({ type: "palette", project: event.path, commands: [] });
-      }
       for (const kept of this.#rows.values()) {
         for (const key of kept.keys()) {
           if (key === event.path || key.startsWith(`${event.path}\u0000`)) {
@@ -752,7 +771,6 @@ class Builder implements Plugin {
         }
       }
     }
-    if (event.event === "opened") this.#offered.delete(event.path);
     this.#emit("project", event);
     if (event.event !== "opened") return;
     await Promise.all([
@@ -857,18 +875,30 @@ class Builder implements Plugin {
           url,
         }),
     );
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("the command did not finish in time")),
+        PICK_MS,
+      );
+    });
     try {
-      await command.handler({
-        id: pick.id,
-        project: pick.project,
-        session: pick.session || null,
-        openUrl,
-      });
+      await Promise.race([
+        command.handler({
+          id: pick.id,
+          project: pick.project,
+          session: pick.session || null,
+          openUrl,
+        }),
+        late,
+      ]);
       answered = true;
       this.#write({ type: "result", id: pick.id });
     } catch (error) {
       answered = true;
       this.#write({ type: "result", id: pick.id, error: reason(error) });
+    } finally {
+      clearTimeout(timer);
     }
   }
 
