@@ -152,13 +152,21 @@ svg.s { width: 12px; height: 12px; }
 .btn.offer.pressed { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .empty { padding: 14px 10px; display: flex; align-items: center; gap: 8px; color: var(--ink-3); font-size: 12.5px; border-top: 1px solid var(--divider); }
 .empty svg { color: var(--add); }
-@media (max-width: 760px) {
-  .orow { grid-template-columns: 8px minmax(0, 1fr) 170px minmax(236px, max-content); }
+@media (max-width: 940px) {
+  .orow { grid-template-columns: 8px minmax(0, 1fr) minmax(0, 190px) minmax(236px, max-content); }
   .orow .ck { display: none; }
 }
-@media (max-width: 520px) {
+@media (max-width: 760px) {
   .orow { grid-template-columns: 8px minmax(0, 1fr) auto; }
   .orow .rv { display: none; }
+}
+@media (max-width: 560px) {
+  .ovw { padding-left: 12px; padding-right: 12px; }
+  .btn.ext { width: 26px; padding: 0; justify-content: center; flex: none; }
+  .btn.ext span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+}
+@media (max-width: 440px) {
+  .orow .acts .nop { display: none; }
 }
 `;
 
@@ -210,7 +218,10 @@ const SCRIPT = `
     var node = el("button", "btn " + cls);
     node.type = "button";
     if (name) node.appendChild(svg(name));
-    node.appendChild(document.createTextNode(label));
+    if (name) {
+      node.title = label;
+      node.appendChild(el("span", "", label));
+    } else node.appendChild(document.createTextNode(label));
     node.addEventListener("click", function () {
       onClick();
       node.classList.add("pressed");
@@ -308,7 +319,7 @@ const SCRIPT = `
         nop.tabIndex = 0;
         nop.appendChild(el("span", "tip", "No project here has " + row.repo + " as its repository. Add its folder as a project to review it here."));
         acts.appendChild(nop);
-        acts.appendChild(button("Open on GitHub", "", function () { send({ do: "open", key: key }); }, "ext"));
+        acts.appendChild(button("Open on GitHub", "ext", function () { send({ do: "open", key: key }); }, "ext"));
       }
     }
     return acts;
@@ -360,7 +371,7 @@ const SCRIPT = `
     parts.node.appendChild(checksOf(row));
     parts.node.appendChild(myReviewOf(row));
     var acts = el("div", "acts");
-    acts.appendChild(button("Open on GitHub", "", function () { send({ do: "open", key: row.key }); }, "ext"));
+    acts.appendChild(button("Open on GitHub", "ext", function () { send({ do: "open", key: row.key }); }, "ext"));
     parts.node.appendChild(acts);
     return parts.node;
   }
