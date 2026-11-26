@@ -1,6 +1,8 @@
 /**
  * The page the viewer shows: the reviews asked of the user, one row each,
- * with what can be done about it. The page holds no data of its own. It
+ * with what can be done about it. As a project's overview it shows one
+ * repository, with the user's own open pull requests there first. The page
+ * holds no data of its own. It
  * asks the plugin for what it shows once it has loaded and draws each
  * message that comes, and every word from GitHub goes onto it as text,
  * never as markup. Its colours are the app's theme, read from the custom
@@ -22,6 +24,11 @@ export function page(): string {
     <span class="upd"><span id="updated"></span><button id="refresh" type="button">${icon("refresh", "i s")}Refresh</button></span>
   </div>
   <div class="ov-trouble" id="trouble" hidden><span class="w">Trouble</span><span id="trouble-text"></span><span class="btns"><button class="btn" id="again" type="button">Try again</button></span></div>
+  <p class="scope" id="scope" hidden><span id="scope-text"></span><button class="btn" id="all" type="button">Show all repositories</button></p>
+  <section class="grp" id="mine" hidden>
+    <h3>Your pull requests <span id="mine-count">0</span></h3>
+    <div id="mine-rows"></div>
+  </section>
   <section class="grp" id="asks">
     <h3>Review requested <span id="count">0</span></h3>
     <div id="rows"></div>
@@ -102,6 +109,7 @@ svg.s { width: 12px; height: 12px; }
 .ov-trouble { margin: 8px 0 0; padding: 7px 10px; border-radius: var(--radius); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--del) 45%, transparent); font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ov-trouble .w { color: var(--del); font-weight: 600; }
 .ov-trouble .btns { margin-left: auto; display: flex; gap: 6px; }
+.scope { margin: 6px 0 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--ink-3); }
 .grp { margin-top: 16px; }
 .grp h3 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--ink-2); display: flex; gap: 6px; }
 .grp h3 span { color: var(--ink-3); font-weight: 400; }
@@ -164,6 +172,11 @@ const SCRIPT = `
   var updatedEl = document.getElementById("updated");
   var troubleEl = document.getElementById("trouble");
   var troubleText = document.getElementById("trouble-text");
+  var scopeEl = document.getElementById("scope");
+  var scopeText = document.getElementById("scope-text");
+  var mineEl = document.getElementById("mine");
+  var mineRows = document.getElementById("mine-rows");
+  var mineCount = document.getElementById("mine-count");
   var shown = null;
   var target = null;
 
@@ -301,18 +314,18 @@ const SCRIPT = `
     return acts;
   }
 
-  function rowOf(row) {
+  function startOf(row, state, linked) {
     var node = el("div", "orow");
     node.dataset.key = row.key;
     var dot = el("span", "pdot");
-    dot.dataset.state = dotOf(row);
+    dot.dataset.state = state;
     node.appendChild(dot);
 
     var main = el("div");
     main.style.minWidth = "0";
     var title = el("div", "ttl", row.title);
     if (row.draft) title.appendChild(el("em", "", "Draft"));
-    if (row.standing !== "none") {
+    if (linked) {
       title.dataset.open = "";
       title.title = "Open on GitHub";
       title.tabIndex = 0;
@@ -326,12 +339,63 @@ const SCRIPT = `
       });
     }
     main.appendChild(title);
+    node.appendChild(main);
+    return { node: node, main: main };
+  }
+
+  function myReviewOf(row) {
+    var who = row.review.who.join(", ");
+    var by = who ? " by " + who : "";
+    switch (row.review.kind) {
+      case "approved": return cell("ready", "tick", "Approved" + by, "rv");
+      case "changes": return cell("fail", "x", "Changes requested" + by, "rv");
+      case "asked": return cell("", "person", "Waiting on " + (who || "review"), "rv");
+      default: return cell("", "dash", "No reviewers", "rv");
+    }
+  }
+
+  function mineRowOf(row) {
+    var parts = startOf(row, row.state, true);
+    parts.main.appendChild(el("div", "sub", "#" + row.number + " · " + row.head + " · " + row.summary));
+    parts.node.appendChild(checksOf(row));
+    parts.node.appendChild(myReviewOf(row));
+    var acts = el("div", "acts");
+    acts.appendChild(button("Open on GitHub", "", function () { send({ do: "open", key: row.key }); }, "ext"));
+    parts.node.appendChild(acts);
+    return parts.node;
+  }
+
+  function emptyOf(icon, text) {
+    var empty = el("div", "empty");
+    empty.appendChild(svg(icon));
+    empty.appendChild(el("span", "", text));
+    return empty;
+  }
+
+  function scoped() { return typeof shown.repo === "string"; }
+
+  function drawMine() {
+    scopeEl.hidden = !scoped();
+    mineEl.hidden = !scoped();
+    mineRows.replaceChildren();
+    if (!scoped()) return;
+    scopeText.textContent = shown.repo ? "Showing " + shown.repo : "Showing this project's repository";
+    var mine = Array.isArray(shown.mine) ? shown.mine : null;
+    mineCount.textContent = mine ? String(mine.length) : "";
+    if (mine === null) mineRows.appendChild(emptyOf("run", "Not read yet."));
+    else if (mine.length === 0) mineRows.appendChild(emptyOf("tick", "You have no open pull requests here."));
+    else mine.forEach(function (row) { mineRows.appendChild(mineRowOf(row)); });
+  }
+
+  function rowOf(row) {
+    var parts = startOf(row, dotOf(row), row.standing !== "none");
+    var node = parts.node;
+    var main = parts.main;
     var sub = el("div", "sub");
     var slash = row.repo.lastIndexOf("/", row.repo.lastIndexOf("/") - 1);
     if (slash > 0) sub.appendChild(el("span", "host", row.repo.slice(0, slash + 1)));
     sub.appendChild(document.createTextNode(row.repo.slice(slash + 1) + " #" + row.number + " · by " + row.author + " · " + ago(row.at) + " · " + (row.draft ? "Draft" : "Ready")));
     main.appendChild(sub);
-    node.appendChild(main);
 
     node.appendChild(checksOf(row));
     node.appendChild(reviewOf(row));
@@ -347,12 +411,8 @@ const SCRIPT = `
     var rows = Array.isArray(shown.rows) ? shown.rows : [];
     countEl.textContent = String(rows.length);
     rowsEl.replaceChildren();
-    if (rows.length === 0) {
-      var empty = el("div", "empty");
-      empty.appendChild(svg("tick"));
-      empty.appendChild(el("span", "", "No reviews asked of you."));
-      rowsEl.appendChild(empty);
-    }
+    if (rows.length === 0) rowsEl.appendChild(emptyOf("tick", scoped() ? "No reviews asked of you here." : "No reviews asked of you."));
+    drawMine();
     rows.forEach(function (row) { rowsEl.appendChild(rowOf(row)); });
     aim();
   }
@@ -364,6 +424,12 @@ const SCRIPT = `
     rowsEl.querySelectorAll(".orow").forEach(function (node) {
       if (node.dataset.key === key) found = node;
     });
+    // An overview leaves out other repositories, so a pull request it does
+    // not show is looked for among them all.
+    if (found === null && scoped()) {
+      send({ do: "all" });
+      return;
+    }
     target = null;
     var at = found || document.getElementById("asks");
     at.scrollIntoView({ block: "center" });
@@ -381,6 +447,7 @@ const SCRIPT = `
 
   document.getElementById("refresh").addEventListener("click", function () { send({ do: "refresh" }); });
   document.getElementById("again").addEventListener("click", function () { send({ do: "refresh" }); });
+  document.getElementById("all").addEventListener("click", function () { send({ do: "all" }); });
   setInterval(function () { if (shown !== null) updatedEl.textContent = updated(shown.updated); }, 30000);
 
   if (bridge) {

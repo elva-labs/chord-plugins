@@ -170,6 +170,15 @@ export interface SentEvent {
   outcome: "delivered" | "gone" | "refused";
 }
 
+/** A palette command the user picked: the id to answer, the command, the
+    project on screen and the session in front of the user, when one is. */
+export interface PickCall {
+  id: string;
+  command: string;
+  project: string;
+  session?: string | null;
+}
+
 /** Everything that arrives on standard input. */
 export type AppMessage =
   | HelloEvent
@@ -181,7 +190,8 @@ export type AppMessage =
   | SentEvent
   | CommandEvent
   | ({ type: "tool" } & ToolCall)
-  | ({ type: "action" } & ActionCall);
+  | ({ type: "action" } & ActionCall)
+  | ({ type: "pick" } & PickCall);
 
 /** A tool as the greeting declares it. */
 export interface DeclaredTool {
@@ -358,6 +368,20 @@ export interface ViewDataLine {
   data: unknown;
 }
 
+/** A command as the app's palette lists it. */
+export interface PaletteCommand {
+  id: string;
+  label: string;
+}
+
+/** Every palette command the plugin offers for one open project, in place
+    of the last such line. An empty list takes them away. */
+export interface PaletteLine {
+  type: "palette";
+  project: string;
+  commands: PaletteCommand[];
+}
+
 /** Everything the plugin writes to standard output. */
 export type PluginMessage =
   | Greeting
@@ -372,7 +396,8 @@ export type PluginMessage =
   | StartLine
   | SendLine
   | ViewLine
-  | ViewDataLine;
+  | ViewDataLine
+  | PaletteLine;
 
 /** Where to open, as the `open` helper takes it. */
 export interface OpenOptions {

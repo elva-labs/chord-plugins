@@ -33,11 +33,12 @@ beforeEach(async () => {
     [
       "#!/bin/sh",
       'case "$*" in',
+      `  *author:@me*) cat "${dir}/mine.json"; exit 0 ;;`,
       `  *user-review-requested*) echo "search $GH_HOST" >> "${dir}/calls"; cat "${dir}/search.json"; exit 0 ;;`,
       "esac",
       'case "$1 $2" in',
       `  "api graphql") echo "api $GH_HOST" >> "${dir}/calls"; cat "${dir}/answer.json" ;;`,
-      `  "auth status") echo '{"hosts":{"github.com":[]}}' ;;`,
+      `  "auth status") cat "${dir}/auth.json" ;;`,
       `  "pr merge") echo "merge $GH_HOST $*" >> "${dir}/calls" ;;`,
       "  *) exit 1 ;;",
       "esac",
@@ -45,6 +46,7 @@ beforeEach(async () => {
     ].join("\n"),
     { mode: 0o755 },
   );
+  await writeFile(join(dir, "auth.json"), '{"hosts":{"github.com":[]}}');
 });
 
 afterEach(async () => {
@@ -228,6 +230,12 @@ it("offers the reviews asked of you on the page, starts one through the app's ca
     join(dir, "search.json"),
     search([{ number: 7, title: evil }]),
   );
+  await writeFile(
+    join(dir, "mine.json"),
+    JSON.stringify({
+      data: { search: { nodes: [node({ number: 42 })] } },
+    }),
+  );
   const app = streams();
   const done = serve({ input: app.input, output: app.output });
   const hello = await app.find(() => true);
@@ -250,6 +258,43 @@ it("offers the reviews asked of you on the page, starts one through the app's ca
     standing: "requested",
     session: null,
   });
+
+  const offered = await app.find((line) => line.type === "palette");
+  expect(offered.line).toEqual({
+    type: "palette",
+    project: repo,
+    commands: [{ id: "overview", label: "Pull request overview" }],
+  });
+  app.send({ type: "pick", id: "p1", command: "overview", project: repo });
+  const opened = await app.find(
+    (line) => line.type === "view" && line.open === true,
+  );
+  const picked = await app.find(
+    (line) => line.type === "result" && line.id === "p1",
+    opened.at,
+  );
+  expect(picked.line).toEqual({ type: "result", id: "p1" });
+  const overview = await app.find(
+    (line) => line.type === "view_data" && line.data.mine?.length === 1,
+    opened.at,
+  );
+  expect(overview.line.data.repo).toBe("orbit/api");
+
+  app.send({
+    type: "action",
+    id: "v1",
+    section: "pulls",
+    action: "view",
+    row: null,
+    input: {},
+    project: repo,
+    session: null,
+  });
+  const everything = await app.find(
+    (line) => line.type === "view_data" && line.data.repo === undefined,
+    overview.at,
+  );
+  expect(everything.line.data.mine).toBeUndefined();
 
   app.send({
     type: "view_message",
@@ -349,6 +394,14 @@ it("offers the reviews asked of you on the page, starts one through the app's ca
   });
   expect(anew.line.prompt).toContain("again");
   expect(await calls()).toContain("search github.com");
+
+  await writeFile(join(dir, "auth.json"), '{"hosts":{}}');
+  app.send({ type: "view_message", project: repo, payload: { do: "refresh" } });
+  const withdrawn = await app.find(
+    (line) => line.type === "palette" && line.commands.length === 0,
+    anew.at,
+  );
+  expect(withdrawn.line.project).toBe(repo);
 
   app.send({ type: "stop" });
   await done;

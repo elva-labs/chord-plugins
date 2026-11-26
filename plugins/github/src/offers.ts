@@ -8,13 +8,16 @@
  * is not, and a review asked again goes to the session that did the first
  * one. While a start or a line for a pull request waits on its answer,
  * another click on it does nothing. gh, git, the clock and the app are all
- * handed in, so a test can stand in for each.
+ * handed in, so a test can stand in for each. A project's page shows the
+ * reviews asked on every host, or, once its overview is opened, those of
+ * the project's repository and the user's own open pull requests there.
  */
 
 import type { StartOptions } from "@elva-labs/workbench-plugin";
 import { repoKey, type Repo } from "./address.js";
 import { timeOf } from "./app.js";
 import type { Gh, Trouble } from "./gh.js";
+import { readMine, type Mine } from "./mine.js";
 import type { Pauses } from "./pauses.js";
 import { placeOf, type Place, type Remotes } from "./place.js";
 import {
@@ -26,10 +29,18 @@ import {
   reviewName,
   reviewPrompt,
 } from "./prompts.js";
+import type { Pull } from "./pulls.js";
 import { readAsks, type Asked, type Asks } from "./requests.js";
 import { keyOfRef, refOf, type Reviews } from "./reviews.js";
 import { Schedule, type Clock, type Outcome } from "./schedule.js";
-import { checksOf } from "./standing.js";
+import {
+  checksOf,
+  reviewsOf,
+  stateOf,
+  summaryOf,
+  type Reviews as ReviewStanding,
+  type State,
+} from "./standing.js";
 import { HOSTS_MS, LOW_RATE, obvious } from "./watch.js";
 
 /** What the offers tell the app. */
@@ -46,6 +57,8 @@ export interface OfferOut {
   send(answers: string, session: string, text: string): void;
   /** Opens a web address. */
   openUrl(project: string, answers: string, url: string): void;
+  /** Looks again at what a project is offered in the app's palette. */
+  offer(project: string): void;
 }
 
 /** What the offers work with. */
@@ -83,11 +96,32 @@ export interface PageRow {
   refused: boolean;
 }
 
+/** One of the user's own open pull requests, as the page shows it. */
+export interface MineRow {
+  key: string;
+  title: string;
+  url: string;
+  number: number;
+  /** The branch it comes from. */
+  head: string;
+  draft: boolean;
+  state: State;
+  checks: PageRow["checks"];
+  review: { kind: ReviewStanding["kind"]; who: string[] };
+  /** What it is waiting on, in a few words. */
+  summary: string;
+}
+
 /** What a project's page shows. */
 export interface PageData {
   updated: number | null;
   trouble: string | null;
   rows: PageRow[];
+  /** The one repository shown, when the page is a project's overview. */
+  repo?: string;
+  /** The user's own open pull requests there, or null while they have not
+      been read. Only an overview has it. */
+  mine?: MineRow[] | null;
 }
 
 /** The longest a notification's target may be, in bytes. */
@@ -113,6 +147,12 @@ type Read =
   | { host: string; paused: Trouble }
   | { host: string; answer: Asks | { trouble: Trouble } };
 
+/** The user's own pull requests in one repository, as last read. */
+interface Own {
+  pulls: Pull[] | null;
+  trouble: Trouble | null;
+}
+
 /** What one host's search left standing. */
 interface Host {
   asks: Asked[];
@@ -130,6 +170,11 @@ export class Offers {
   readonly #projects: string[] = [];
   readonly #places = new Map<string, Place | null>();
   readonly #hosts = new Map<string, Host>();
+  /** The projects whose page is an overview of their repository. */
+  readonly #overviews = new Set<string>();
+  /** The user's pull requests in the overviews' repositories, by
+      repository key. */
+  readonly #own = new Map<string, Own>();
   /** The hosts looked at once already, whose new asks are told. */
   readonly #looked = new Set<string>();
   /** The running sessions, by id, and their projects. */
@@ -149,6 +194,10 @@ export class Offers {
   readonly #refused = new Set<string>();
   #signed: Set<string> | null = null;
   #signedAt = 0;
+  /** The call to gh asking for its hosts, while one is on its way. */
+  #asking: Promise<void> | null = null;
+  /** Whether every project's repository is to be read again. */
+  #replace = false;
   #updated: number | null = null;
   readonly schedule: Schedule;
 
@@ -185,6 +234,34 @@ export class Offers {
     if (at !== -1) this.#projects.splice(at, 1);
     this.#places.delete(project);
     this.#pages.delete(project);
+    this.#overviews.delete(project);
+  }
+
+  /** Whether a project's overview is offered: its repository is on a host
+      gh is signed in to. */
+  async offered(project: string): Promise<boolean> {
+    let place = this.#places.get(project);
+    if (place === undefined) {
+      place = placeOf(await this.#remotes(project).catch(() => ""));
+    }
+    if (place === null) return false;
+    return (await this.#signedIn(this.#now())).has(place.base.host);
+  }
+
+  /** Makes a project's page the overview of its repository, and reads at
+      once. */
+  overview(project: string): void {
+    this.#overviews.add(project);
+    this.#pages.delete(project);
+    this.#page(project);
+    void this.schedule.now();
+  }
+
+  /** Makes a project's page show the reviews asked in every repository. */
+  everything(project: string): void {
+    this.#overviews.delete(project);
+    this.#pages.delete(project);
+    this.#page(project);
   }
 
   /** Searches every host again at once, a rate-limited one too, reading
@@ -192,8 +269,9 @@ export class Offers {
       so this lifts a searched host's pause for the pull requests' reads
       as well. */
   refresh(): Promise<void> {
-    this.#places.clear();
-    this.#signed = null;
+    this.#replace = true;
+    this.#signedAt = -Infinity;
+    this.#asking = null;
     for (const host of this.#hosts.keys()) this.#pauses.lift(host);
     return this.schedule.now();
   }
@@ -285,6 +363,7 @@ export class Offers {
 
   /** What a project's page shows. */
   dataOf(project: string): PageData {
+    if (this.#overviews.has(project)) return this.#overviewOf(project);
     return {
       updated: this.#updated,
       trouble: this.#troubleText(),
@@ -306,13 +385,18 @@ export class Offers {
       void this.refresh();
       return;
     }
-    if (id === null || typeof key !== "string") return;
-    const ask = this.askOf(key);
-    if (ask === null) return;
-    if (verb === "open") {
-      this.#out.openUrl(project, id, ask.url);
+    if (verb === "all") {
+      this.everything(project);
       return;
     }
+    if (id === null || typeof key !== "string") return;
+    if (verb === "open") {
+      const url = (this.askOf(key) ?? this.#ownOf(key))?.url;
+      if (url !== undefined) this.#out.openUrl(project, id, url);
+      return;
+    }
+    const ask = this.askOf(key);
+    if (ask === null) return;
     const now = this.#now();
     this.#forget(now);
     if (this.#pending.has(key)) return;
@@ -394,30 +478,57 @@ export class Offers {
   }
 
   #rowOf(ask: Asked, project: string): PageRow {
-    const checks = checksOf(ask);
     const review = this.#reviews.of(ask.key);
     return {
       key: ask.key,
       title: ask.title,
       url: ask.url,
-      repo:
-        ask.host === "github.com"
-          ? `${ask.owner}/${ask.name}`
-          : `${ask.host}/${ask.owner}/${ask.name}`,
+      repo: shownAs(ask),
       number: ask.number,
       author: ask.author,
       at: ask.at,
       draft: ask.draft,
-      checks: {
-        failed: checks.failed.length,
-        passed: checks.passed,
-        running: checks.running,
-      },
+      checks: countsOf(ask),
       standing: this.standingOf(ask),
       session:
         review !== null && review.project === project ? review.session : null,
       refused: this.#refused.has(ask.key),
     };
+  }
+
+  #overviewOf(project: string): PageData {
+    const place = this.#places.get(project);
+    if (!place) {
+      return {
+        updated: this.#updated,
+        trouble: null,
+        rows: [],
+        repo: "",
+        mine: place === null ? [] : null,
+      };
+    }
+    const key = repoKey(place.base);
+    const own = this.#own.get(key);
+    const trouble =
+      this.#hosts.get(place.base.host)?.trouble ?? own?.trouble ?? null;
+    return {
+      updated: this.#updated,
+      trouble: trouble === null ? null : troubleText(trouble),
+      rows: this.asks()
+        .filter((ask) => repoKey(ask) === key)
+        .map((ask) => this.#rowOf(ask, project)),
+      repo: shownAs(place.base),
+      mine: own?.pulls?.map(mineRowOf) ?? null,
+    };
+  }
+
+  /** One of the user's own pull requests read, by key, or null. */
+  #ownOf(key: string): Pull | null {
+    for (const own of this.#own.values()) {
+      const found = own.pulls?.find((pull) => pull.key === key);
+      if (found !== undefined) return found;
+    }
+    return null;
   }
 
   #troubleText(): string | null {
@@ -453,7 +564,10 @@ export class Offers {
         answer: await readAsks(this.#gh, host).catch(failed(host)),
       };
     });
-    const answers = await Promise.all(reads);
+    const [answers, owned] = await Promise.all([
+      Promise.all(reads),
+      this.#readOwn(hosts, now),
+    ]);
     now = this.#now();
 
     let changed = false;
@@ -502,10 +616,12 @@ export class Offers {
       }
       this.#hosts.set(one.host, { asks: answer.asks, trouble: null });
     }
+    if (this.#keepOwn(owned, now)) changed = true;
     this.#updated = now;
     this.#reviews.prune(now);
     this.#tell(fresh);
     this.#send();
+    for (const project of this.#projects) this.#out.offer(project);
 
     const ends = [...hosts]
       .map((host) => this.#pauses.until(host, now))
@@ -515,6 +631,56 @@ export class Offers {
       changed,
       wake: ends.length === 0 ? null : Math.min(...ends),
     };
+  }
+
+  /** Searches the user's pull requests in each overview's repository that
+      is on a searched host. */
+  #readOwn(hosts: ReadonlySet<string>, now: number): Promise<OwnRead[]> {
+    const repos = new Map<string, Repo>();
+    for (const project of this.#overviews) {
+      const base = this.#places.get(project)?.base;
+      if (base && hosts.has(base.host)) repos.set(repoKey(base), base);
+    }
+    return Promise.all(
+      [...repos].map(async ([key, repo]): Promise<OwnRead> => {
+        const until = this.#pauses.until(repo.host, now);
+        if (until !== null) {
+          const paused: Trouble = { kind: "limited", host: repo.host, until };
+          return { key, host: repo.host, answer: { trouble: paused } };
+        }
+        return {
+          key,
+          host: repo.host,
+          answer: await readMine(this.#gh, repo).catch(failed(repo.host)),
+        };
+      }),
+    );
+  }
+
+  /** Keeps what the searches of the user's pull requests found, pausing a
+      host that is out of calls, and says whether any list changed. */
+  #keepOwn(reads: OwnRead[], now: number): boolean {
+    let changed = false;
+    for (const { key, host, answer } of reads) {
+      const had = this.#own.get(key)?.pulls ?? null;
+      if ("trouble" in answer) {
+        let trouble = answer.trouble;
+        if (trouble.kind === "limited") {
+          const until =
+            this.#pauses.until(host, now) ??
+            this.#pauses.pause(host, trouble.until, now);
+          trouble = { ...trouble, until };
+        }
+        this.#own.set(key, { pulls: had, trouble });
+        continue;
+      }
+      if (answer.rate !== null && answer.rate.remaining < LOW_RATE) {
+        this.#pauses.pause(host, answer.rate.resetAt, now);
+      }
+      if (JSON.stringify(had) !== JSON.stringify(answer.pulls)) changed = true;
+      this.#own.set(key, { pulls: answer.pulls, trouble: null });
+    }
+    return changed;
   }
 
   /** Tells the reviews asked since the last look: one by itself, several
@@ -557,13 +723,17 @@ export class Offers {
     this.#out.data(project, data);
   }
 
-  /** Reads the repository of every open project not read yet. */
+  /** Reads the repository of every open project not read yet, and of
+      every one after a Refresh. What was read before stands until then. */
   async #placeAll(): Promise<void> {
+    const every = this.#replace;
+    this.#replace = false;
     await Promise.all(
       this.#projects
-        .filter((project) => !this.#places.has(project))
+        .filter((project) => every || !this.#places.has(project))
         .map(async (project) => {
           const listing = await this.#remotes(project).catch(() => "");
+          if (!this.#projects.includes(project)) return;
           this.#places.set(project, placeOf(listing));
         }),
     );
@@ -587,25 +757,78 @@ export class Offers {
     return hosts;
   }
 
-  /** The hosts gh says it is signed in to, as it said within HOSTS_MS. */
+  /** The hosts gh says it is signed in to, as it said within HOSTS_MS.
+      Everyone asking at once waits on one call, and while gh cannot say,
+      what it said last holds. */
   async #signedIn(now: number): Promise<ReadonlySet<string>> {
     if (this.#signed !== null && now - this.#signedAt < HOSTS_MS) {
       return this.#signed;
     }
-    let hosts: unknown;
+    if (this.#asking === null) {
+      const asking: Promise<void> = this.#askHosts().then((hosts) => {
+        // A Refresh leaves an earlier call's answer behind.
+        if (this.#asking !== asking) return;
+        this.#asking = null;
+        if (hosts === null) return;
+        this.#signed = hosts;
+        this.#signedAt = now;
+      });
+      this.#asking = asking;
+    }
+    await this.#asking;
+    return this.#signed ?? new Set();
+  }
+
+  /** The hosts `gh auth status` lists, or null when it could not say. */
+  async #askHosts(): Promise<Set<string> | null> {
     try {
       const run = await this.#gh(["auth", "status", "--json", "hosts"]);
-      hosts = (JSON.parse(run.stdout) as { hosts?: unknown }).hosts;
+      const { hosts } = JSON.parse(run.stdout) as { hosts?: unknown };
+      if (typeof hosts !== "object" || hosts === null) return null;
+      return new Set(Object.keys(hosts).map((host) => host.toLowerCase()));
     } catch {
-      hosts = null;
+      return null;
     }
-    if (typeof hosts !== "object" || hosts === null) return new Set();
-    this.#signed = new Set(
-      Object.keys(hosts).map((host) => host.toLowerCase()),
-    );
-    this.#signedAt = now;
-    return this.#signed;
   }
+}
+
+/** What came of one repository's search of the user's pull requests. */
+interface OwnRead {
+  key: string;
+  host: string;
+  answer: Mine | { trouble: Trouble };
+}
+
+/** A repository as the page names it: `owner/name`, with its host when
+    that is not github.com. */
+function shownAs(repo: Repo): string {
+  const named = `${repo.owner}/${repo.name}`;
+  return repo.host === "github.com" ? named : `${repo.host}/${named}`;
+}
+
+function countsOf(pull: Pick<Pull, "checks">): PageRow["checks"] {
+  const checks = checksOf(pull);
+  return {
+    failed: checks.failed.length,
+    passed: checks.passed,
+    running: checks.running,
+  };
+}
+
+function mineRowOf(pull: Pull): MineRow {
+  const { kind, who } = reviewsOf(pull);
+  return {
+    key: pull.key,
+    title: pull.title,
+    url: pull.url,
+    number: pull.number,
+    head: pull.head,
+    draft: pull.draft,
+    state: stateOf(pull) ?? "ok",
+    checks: countsOf(pull),
+    review: { kind, who },
+    summary: summaryOf(pull),
+  };
 }
 
 function failed(host: string) {

@@ -103,7 +103,8 @@ export const HEAD_CHECKS = `commits(last: 1) { nodes { commit { statusCheckRollu
     }
   } } } } }`;
 
-const PULL = `fragment pull on PullRequest {
+/** A pull request's fields, as a query's fragment named `pull`. */
+export const PULL = `fragment pull on PullRequest {
   number title url state isDraft headRefName headRefOid baseRefName
   mergeable mergeStateStatus reviewDecision closedAt mergedAt
   headRepository { name owner { login } }
