@@ -31,6 +31,26 @@ not on the PATH, a host `gh` is not signed in to, with the `gh auth login
 lifts, a repository GitHub cannot find, or, in a few words, what `gh` said
 when a call failed.
 
+## What it needs
+
+`gh` on the PATH the plugin runs with, signed in. The plugin checks when it
+is turned on and when the app starts, with one `gh auth status`, and again
+on Check again. When `gh` is there and signed in nothing is said. When it
+is not, the project's own Pull requests fold says so, beside its title and
+in its rows, until a check finds it:
+
+- **GitHub CLI, not found**: the install command for the machine
+  (`brew install gh` on macOS, `winget install --id GitHub.cli` on Windows,
+  a pointer to the guide elsewhere), an Install guide action that opens
+  cli.github.com, and a row for the sign-in that waits on it.
+- **Signed in to GitHub, not signed in**: run `gh auth login`.
+
+The fold is the project's, so a session's own Pull requests fold takes its
+place once there is one. Nothing is shown as a fault of the app, and the
+rest of the plugin works as before: its reads still say what stands in the
+way on the session's fold. A check that gets no answer from `gh` within ten
+seconds, or an answer it does not know, says nothing.
+
 ## Whose pull requests
 
 A pull request is a session's when the session ran `gh pr create`, it
@@ -159,7 +179,7 @@ makes a pull request in it. Its claims go with the session, as all do.
 ## What it runs
 
 `gh` and `git config --get-regexp ^remote\.` in a session's folder, and
-nothing else, each as an argument list rather than a line for a shell. A
+nothing else (the check for `gh` runs where the plugin runs), each as an argument list rather than a line for a shell. A
 call that has not answered within a minute is ended. It has no tools for
 the agent.
 

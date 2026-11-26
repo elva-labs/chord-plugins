@@ -49,7 +49,11 @@ function line(over: Partial<Pull> = {}, more: Partial<Line> = {}): Line {
 }
 
 function view(lines: Line[], trouble: View["trouble"] = null): View {
-  return { lines, trouble };
+  return { lines, trouble, need: null };
+}
+
+function needing(need: View["need"]): View {
+  return { lines: [], trouble: null, need };
 }
 
 it("takes the worst of the checks and reviews as a pull request's state", () => {
@@ -524,4 +528,57 @@ it("gives a review session a row for the pull request it reviews, which opens it
   expect(keyOfRow(rows[0]?.id)).toBeNull();
   expect(keyOfReviewRow(rowId("github.com/orbit/api#7"))).toBeNull();
   expect(keyOfReviewRow(undefined)).toBeNull();
+});
+
+it("says what gh is missing on the project's fold, with the install for the platform and a way to check again", () => {
+  const missing = needing("missing");
+  expect(detailOf(missing)).toBe(
+    "Needs the GitHub CLI on this machine, signed in.",
+  );
+  expect(headerOf(missing)).toEqual([{ id: REFRESH, label: "Check again" }]);
+  expect(rowsOf(missing, "darwin")).toEqual([
+    {
+      id: "need:gh",
+      label: "GitHub CLI",
+      detail: "Not found",
+      state: "waiting",
+      actions: [{ id: "guide", label: "Install guide" }],
+      default: "guide",
+      facts: [
+        { label: "Install", text: "brew install gh" },
+        { label: "Guide", text: "cli.github.com" },
+      ],
+    },
+    {
+      id: "need:sign-in",
+      label: "Signed in to GitHub",
+      detail: "After the install",
+      facts: [{ label: "Run", text: "gh auth login" }],
+    },
+  ]);
+  expect(rowsOf(missing, "win32")[0]?.facts?.[0]?.text).toBe(
+    "winget install --id GitHub.cli",
+  );
+  expect(rowsOf(missing, "linux")[0]?.facts?.[0]?.text).toBe(
+    "see the install guide",
+  );
+});
+
+it("says gh is not signed in with the command to run, and nothing when it has what it needs", () => {
+  const out = needing("signed-out");
+  expect(detailOf(out)).toBe("Needs a sign-in to GitHub.");
+  expect(headerOf(out)).toEqual([{ id: REFRESH, label: "Check again" }]);
+  expect(rowsOf(out)).toEqual([
+    {
+      id: "need:sign-in",
+      label: "Signed in to GitHub",
+      detail: "Not signed in",
+      state: "waiting",
+      facts: [{ label: "Run", text: "gh auth login" }],
+    },
+  ]);
+  const fine = needing(null);
+  expect(rowsOf(fine)).toEqual([]);
+  expect(detailOf(fine)).toBeNull();
+  expect(headerOf(fine)).toEqual([]);
 });

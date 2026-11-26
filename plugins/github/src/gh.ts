@@ -36,6 +36,10 @@ export type Trouble =
       the account gh uses cannot see it. */
   | { kind: "gone"; host: string; repo: string };
 
+/** What gh needs on this machine before the plugin can read anything: gh
+    itself, or a sign-in. */
+export type Need = "missing" | "signed-out";
+
 /** gh could not be started at all. */
 export class Missing extends Error {
   constructor() {
@@ -157,4 +161,9 @@ export function troubleOf(run: Run, host: string): Trouble | null {
   }
   if (LIMITED.test(text)) return { kind: "limited", host, until: null };
   return { kind: "failed", host, text: said(run) };
+}
+
+/** Whether what a call said is gh telling that it has no sign-in. */
+export function saysSignedOut(run: Run): boolean {
+  return SIGNED_OUT.test(`${run.stderr}\n${run.stdout}`);
 }
