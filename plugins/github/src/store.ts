@@ -16,11 +16,19 @@ import { KEPT_CLOSED_MS } from "./mapping.js";
     home directory. */
 export const HOME = "WORKBENCH_GITHUB_HOME";
 
-/** Where the claims are kept. */
-export function file(): string {
+/** Where one of the plugin's files is kept, the claims by default. */
+export function file(name = "sessions.json"): string {
   const said = process.env[HOME];
   const home = said !== undefined && said !== "" ? said : homedir();
-  return join(home, ".agent-workbench", "plugins", "github", "sessions.json");
+  return join(home, ".agent-workbench", "plugins", "github", name);
+}
+
+/** Writes a file whole: beside it first, then moved into place. */
+export async function writeWhole(path: string, text: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const beside = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(beside, text, "utf8");
+  await rename(beside, path);
 }
 
 /** How many sessions are kept. */
@@ -154,19 +162,10 @@ export class Store {
       null,
       2,
     )}\n`;
-    const next = this.#queue.then(
-      () => this.#write(text),
-      () => this.#write(text),
-    );
+    const write = (): Promise<void> => writeWhole(this.#file, text);
+    const next = this.#queue.then(write, write);
     this.#queue = next.catch(() => undefined);
     return next;
-  }
-
-  async #write(text: string): Promise<void> {
-    await mkdir(dirname(this.#file), { recursive: true });
-    const beside = `${this.#file}.${randomBytes(4).toString("hex")}.tmp`;
-    await writeFile(beside, text, "utf8");
-    await rename(beside, this.#file);
   }
 }
 

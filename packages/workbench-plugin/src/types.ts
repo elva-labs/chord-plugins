@@ -108,6 +108,9 @@ export interface SessionEvent {
   /** The session that started this one, while the window still knows
       it. */
   startedBy?: string;
+  /** The ref the plugin gave the start that began this session, on the
+      lines of its own sessions only and kept across resumes. */
+  ref?: string;
 }
 
 /** A command a session ran that begins with one of the words the
@@ -150,6 +153,21 @@ export interface ViewMessageEvent {
   type: "view_message";
   project: string;
   payload: unknown;
+  /** Present on the first message of a click or a key in the page: the id
+      a start, a send or a web address may answer. */
+  id?: string;
+}
+
+/** What came of a line the plugin sent one of its sessions. */
+export interface SentEvent {
+  type: "sent";
+  /** The id the send answered. */
+  answers: string;
+  session: string;
+  /** `delivered` when the session has the line, `gone` when it will not
+      come back or is not the plugin's, `refused` when the line was not put
+      to it and may be sent again later. */
+  outcome: "delivered" | "gone" | "refused";
 }
 
 /** Everything that arrives on standard input. */
@@ -160,6 +178,7 @@ export type AppMessage =
   | TreeEvent
   | StopEvent
   | ViewMessageEvent
+  | SentEvent
   | CommandEvent
   | ({ type: "tool" } & ToolCall)
   | ({ type: "action" } & ActionCall);
@@ -249,12 +268,16 @@ export interface PresentLine {
   caption?: string;
 }
 
-/** A line for a session's row. */
+/** A line for a session's row, or with no session the plugin's own
+    notification, which opens its page with the target when clicked. */
 export interface NotifyLine {
   type: "notify";
   project: string;
   text: string;
-  session?: string;
+  session?: string | null;
+  /** What the page is handed when the notification opens it, 256 bytes at
+      most. A newer notification with the same target replaces the last. */
+  target?: string;
 }
 
 /** The icons a mark can carry. */
@@ -283,13 +306,37 @@ export interface MarkLine {
 }
 
 /** A web address to open in the user's browser, for the action it
-    answers while that action waits for its result. */
+    answers while that action waits for its result, or for an id it
+    answers within 30 seconds. */
 export interface OpenUrlLine {
   type: "open_url";
   project: string;
   /** The id of the action it answers, as the action message gave it. */
-  action: string;
+  action?: string;
+  /** The id it answers, an action's or a page message's. */
+  answers?: string;
   url: string;
+}
+
+/** A session to start, put to the user on the app's card first. */
+export interface StartLine {
+  type: "start";
+  answers: string;
+  project: string;
+  prompt: string;
+  name?: string;
+  ref?: string;
+  worktree?: boolean;
+  purpose?: "review";
+  agent?: string;
+}
+
+/** A line for a session the plugin started. */
+export interface SendLine {
+  type: "send";
+  answers: string;
+  session: string;
+  text: string;
 }
 
 /** The plugin's page for one project, written out or read from a file of
@@ -322,6 +369,8 @@ export type PluginMessage =
   | NotifyLine
   | MarkLine
   | OpenUrlLine
+  | StartLine
+  | SendLine
   | ViewLine
   | ViewDataLine;
 
@@ -351,4 +400,78 @@ export interface ViewOptions {
   html?: string;
   path?: string;
   open?: boolean;
+}
+
+/** A session to start, as the `start` helper takes it. */
+export interface StartOptions {
+  /** The session's first message, 8 KiB at most, never beginning with
+      `/` or `!`. */
+  prompt: string;
+  /** The session's name until its harness gives it one, one line of 60
+      characters at most. */
+  name?: string;
+  /** Handed back on the session's lines to this plugin alone, 256 bytes
+      at most. */
+  ref?: string;
+  /** Whether the session runs in a worktree of its own. */
+  worktree?: boolean;
+  /** What the session is for. A review begins the card on the agent the
+      user picked for the last one. */
+  purpose?: "review";
+  /** The title of the agent the card suggests, 256 bytes at most. */
+  agent?: string;
+}
+
+/** The theme's colours, fonts and radii by name, as the page is told
+    them and as `--workbench-<name>` properties on its root. */
+export interface ThemeTokens {
+  bg: string;
+  surface: string;
+  "surface-2": string;
+  well: string;
+  ink: string;
+  "ink-2": string;
+  "ink-3": string;
+  rule: string;
+  "rule-strong": string;
+  accent: string;
+  "accent-soft": string;
+  add: string;
+  del: string;
+  mono: string;
+  sans: string;
+  radius: string;
+  "radius-sm": string;
+}
+
+/** What is around the page: the session on screen when it is one of the
+    page's project, the scheme and look the app paints, and its theme. */
+export interface PageContext {
+  session: string | null;
+  scheme: "light" | "dark";
+  look: "modern" | "terminal";
+  tokens: ThemeTokens;
+}
+
+/** The bridge the app gives a plugin's page as `window.workbench`. */
+export interface Workbench {
+  /** The latest context, null until the first arrives. */
+  context: PageContext | null;
+  /** Receives each context, the latest at once when there is one. */
+  onContext(fn: (context: PageContext) => void): void;
+  /** Receives the target of the notification that opened the page, even
+      when the handler is set after it arrived. */
+  onTarget(fn: (target: string) => void): void;
+  /** Sends the plugin a message. The first of a click or a key carries an
+      id the plugin may answer. */
+  send(payload: unknown): void;
+  /** Receives what the plugin sends the page. */
+  onData(fn: (data: unknown) => void): void;
+  /** Opens a file of the project in the viewer, at lines. */
+  open(path: string, from?: number, to?: number, note?: string | null): void;
+  /** Puts text on the agent's prompt line, unsent. */
+  agent(text: string): void;
+  /** Brings a session of the page's project on screen, only as the first
+      message of a click or a key. */
+  show(session: string): void;
 }

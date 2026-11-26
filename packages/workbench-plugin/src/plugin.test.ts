@@ -692,6 +692,30 @@ it("sends the lines the view and viewData helpers stand for", async () => {
   await running;
 });
 
+it("hands the app's greeting to the hello listener, before the sections go", async () => {
+  const { input, output, line, send } = streams();
+  const heard: string[][] = [];
+  const p = plugin({ name: "git", version: "0.1.0" });
+  p.on("hello", (event) => {
+    heard.push(event.projects);
+    p.viewData(event.projects[0]!, { greeted: event.app });
+  });
+  p.section("checks", { title: "Checks", rows: () => [check] });
+  const running = p.run({ input, output });
+  await line(0);
+
+  send({ type: "hello", app: "1.2.0", projects: ["/srv/orbit-api"] });
+  expect(await line(1)).toEqual({
+    type: "view_data",
+    project: "/srv/orbit-api",
+    data: { greeted: "1.2.0" },
+  });
+  expect((await line(2)).type).toBe("section");
+  expect(heard).toEqual([["/srv/orbit-api"]]);
+  input.end();
+  await running;
+});
+
 it("hands what the page sent to the view_message listener", async () => {
   const { input, output, line, send } = streams();
   const heard: unknown[] = [];
@@ -716,6 +740,128 @@ it("hands what the page sent to the view_message listener", async () => {
   expect(heard).toEqual([["/srv/orbit-api", { commit: "1a2b3c" }]]);
   input.end();
   await running;
+});
+
+it("answers a page's click with a start, a send and a web address", async () => {
+  const { input, output, line, send } = streams();
+  const p = plugin({ name: "github", version: "0.3.0", view: "wide" });
+  p.on("view_message", (event) => {
+    if (!event.id) return;
+    p.start(event.project, event.id, {
+      prompt: "Review pull request #42.",
+      name: "Review: Retry with jitter",
+      ref: "pr/42",
+      worktree: true,
+      purpose: "review",
+      agent: "Reviewer",
+    });
+    p.send(event.id, "6f2a", "Review #42 again.");
+    p.openUrl(event.project, event.id, "https://github.com/orbit/api/pull/42");
+  });
+  const running = p.run({ input, output });
+  await line(0);
+
+  send({
+    type: "view_message",
+    project: "/srv/orbit-api",
+    payload: { start: "pr/42" },
+    id: "9d1e",
+  });
+  expect(await line(1)).toEqual({
+    type: "start",
+    answers: "9d1e",
+    project: "/srv/orbit-api",
+    prompt: "Review pull request #42.",
+    name: "Review: Retry with jitter",
+    ref: "pr/42",
+    worktree: true,
+    purpose: "review",
+    agent: "Reviewer",
+  });
+  expect(await line(2)).toEqual({
+    type: "send",
+    answers: "9d1e",
+    session: "6f2a",
+    text: "Review #42 again.",
+  });
+  expect(await line(3)).toEqual({
+    type: "open_url",
+    project: "/srv/orbit-api",
+    answers: "9d1e",
+    url: "https://github.com/orbit/api/pull/42",
+  });
+  input.end();
+  await running;
+});
+
+it("hands what came of a send to the sent listener", async () => {
+  const { input, output, line, send } = streams();
+  const heard: unknown[] = [];
+  const p = plugin({ name: "github", version: "0.3.0" });
+  p.on("sent", (event) => {
+    heard.push(event);
+    p.notify("/srv/orbit-api", event.outcome);
+  });
+  const running = p.run({ input, output });
+  await line(0);
+
+  send({ type: "sent", answers: "9d1e", session: "6f2a", outcome: "gone" });
+  expect(await line(1)).toEqual({
+    type: "notify",
+    project: "/srv/orbit-api",
+    text: "gone",
+  });
+  expect(heard).toEqual([
+    { type: "sent", answers: "9d1e", session: "6f2a", outcome: "gone" },
+  ]);
+  input.end();
+  await running;
+});
+
+it("says the plugin's own notification with the target its page is handed", async () => {
+  const { input, output, line } = streams();
+  const p = plugin({ name: "github", version: "0.3.0", view: "wide" });
+  const running = p.run({ input, output });
+  await line(0);
+
+  p.notify("/srv/orbit-api", "A review was asked of you on #42", null, "pr/42");
+  expect(await line(1)).toEqual({
+    type: "notify",
+    project: "/srv/orbit-api",
+    text: "A review was asked of you on #42",
+    target: "pr/42",
+  });
+  expect(() => p.notify("/srv/orbit-api", "x", null, "t".repeat(257))).toThrow(
+    /256 bytes/,
+  );
+  input.end();
+  await running;
+});
+
+it("refuses a start, a send or a web address the app would drop", () => {
+  const p = plugin({ name: "github", version: "0.3.0" });
+  expect(() =>
+    p.start("/srv/orbit-api", "9d1e", { prompt: "/review" }),
+  ).toThrow(/begin with/);
+  expect(() =>
+    p.start("/srv/orbit-api", "9d1e", { prompt: "\u200b!rm -rf ." }),
+  ).toThrow(/begin with/);
+  expect(() =>
+    p.start("/srv/orbit-api", "9d1e", { prompt: "x".repeat(8 * 1024 + 1) }),
+  ).toThrow(/8192 bytes/);
+  expect(() =>
+    p.start("/srv/orbit-api", "9d1e", {
+      prompt: "Review.",
+      ref: "r".repeat(257),
+    }),
+  ).toThrow(/ref/);
+  expect(() => p.send("9d1e", "6f2a", "!ls")).toThrow(/begin with/);
+  expect(() => p.send("9d1e", "6f2a", "x".repeat(4 * 1024 + 1))).toThrow(
+    /4096 bytes/,
+  );
+  expect(() =>
+    p.openUrl("/srv/orbit-api", "9d1e", "javascript:alert(1)"),
+  ).toThrow(/web address/);
 });
 
 it("ends the loop when it is told to stop", async () => {

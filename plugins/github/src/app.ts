@@ -16,6 +16,7 @@ import type {
 import type { Need, Trouble } from "./gh.js";
 import type { Session } from "./mapping.js";
 import type { Pull } from "./pulls.js";
+import type { Asked } from "./requests.js";
 import {
   checksOf,
   readyToMerge,
@@ -33,6 +34,7 @@ export const TITLE = "Pull requests";
 export const OPEN = "open";
 export const MERGE = "merge";
 export const REFRESH = "refresh";
+export const VIEW = "view";
 export const GUIDE = "guide";
 
 /** Where gh is installed from, and the row ids of what it needs. */
@@ -40,16 +42,18 @@ export const GUIDE_URL = "https://cli.github.com";
 const GH_ROW = "need:gh";
 const SIGN_ROW = "need:sign-in";
 
-/** A session as the app tells it, and whether it ended, or null for one
-    without an id. An app that says nothing of a folder or a worktree gives
-    the project's folder and no worktree. */
+/** A session as the app tells it, whether it ended and the ref the plugin
+    started it with, or null for one without an id. An app that says
+    nothing of a folder or a worktree gives the project's folder and no
+    worktree. */
 export function sessionOf(
   event: SessionEvent,
-): { session: Session; ended: boolean } | null {
+): { session: Session; ended: boolean; ref: string | null } | null {
   if (typeof event.id !== "string" || event.id === "") return null;
   const worktree = event.worktree === true;
   return {
     ended: event.event === "ended",
+    ref: filled(event.ref),
     session: {
       id: event.id,
       project: event.project,
@@ -116,6 +120,42 @@ export function rowId(key: string): string {
     request's. */
 export function keyOfRow(id: string | undefined): string | null {
   return id?.startsWith(ROW) === true ? id.slice(ROW.length) : null;
+}
+
+const ASKS = "asks";
+const REVIEW = "review:";
+
+/** The line at the end of a session's fold for the reviews asked of the
+    user, or none when there are none. */
+export function askRows(asks: Asked[]): Row[] {
+  if (asks.length === 0) return [];
+  const who = [...new Set(asks.map((ask) => ask.author))];
+  return [
+    {
+      id: ASKS,
+      label: `${asks.length} ${asks.length === 1 ? "review" : "reviews"} asked of you`,
+      detail: people(who),
+      state: "waiting",
+      actions: [{ id: VIEW, label: "View" }],
+      default: VIEW,
+    },
+  ];
+}
+
+/** The rows of the pull requests a review session reviews. */
+export function reviewRows(asks: Asked[]): Row[] {
+  return asks.map((ask) => ({
+    id: `${REVIEW}${ask.key}`,
+    label: `#${ask.number} ${ask.title}`,
+    detail: `${ask.owner}/${ask.name} · by ${ask.author}`,
+    actions: [{ id: OPEN, label: "Open on GitHub" }],
+    default: OPEN,
+  }));
+}
+
+/** The key a review row's id names, or null for a row that is not one. */
+export function keyOfReviewRow(id: string | undefined): string | null {
+  return id?.startsWith(REVIEW) === true ? id.slice(REVIEW.length) : null;
 }
 
 /** The fold's rows. */

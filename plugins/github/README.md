@@ -86,6 +86,59 @@ first time it is seen. Your own reviews are not told. Only the session that
 owns the pull request is told, and once that session has ended nobody is.
 There are no settings, so every kind is on.
 
+## Reviews asked of you
+
+The open pull requests whose authors asked you by name for a review, on
+every host an open project's repository is on, at most 30 a host. A team
+asked on your behalf does not count. A review asked since the last look is
+told once as the plugin's own notification, one by itself and several in
+one line; clicking it opens the page at that pull request. The asks the
+plugin finds when it starts are not told.
+
+A session's fold has a row, "N reviews asked of you", whose View opens the
+page, while the session's project is a repository on a host searched. A
+review session has a row for the pull request it reviews, and the line
+beside the title says reviewing.
+
+The page lists each review asked: its title, repository, author and age,
+its checks, and where it stands. An ask's age is the pull request's, from
+when it was opened, since GitHub does not say when the review was asked;
+the page sorts by it too. While a start or a line for a pull request waits
+on the app's answer, at most half a minute, another click on it does
+nothing.
+
+- **Review requested.** Start review asks, on the app's card, to start a
+  Reviewer session named `Review #42 in orbit/api` in a worktree of the
+  project the pull request's repository is open as: the page's own project
+  when it is that repository, otherwise the first project that is. It is
+  told to check the pull request out with `gh pr checkout --repo`, read the
+  change, run the tests that apply, and post nothing to GitHub. When the
+  pull request comes from a fork, it is told to read the change and run
+  nothing from it, its tests included.
+- **Reviewing**, while that session runs. Go to session brings it on
+  screen.
+- **Review ready to read**, once it ended or was put away. Read review
+  brings it on screen.
+- **Re-review requested**, when you reviewed and were asked again.
+  Re-review sends the session that reviewed a line to look again. When
+  that session will not come back, the app's card offers a new one
+  instead. When the session cannot take the line, such as a terminal busy
+  with a command, the row says so and Re-review can be clicked again.
+- **Not a project here**, when no open project has the repository. Open
+  on GitHub is all there is.
+
+A prompt names the pull request only by repository, number and address,
+never by its title, author or anything else someone wrote, and tells the
+session to take the pull request's text as its author's words. Every `gh`
+command in it names the repository, so the checkout's remotes never pick
+another one. The page
+draws titles and names as text. Clicking a title opens the pull request
+on GitHub.
+
+The page follows the app's theme. Which session reviewed which pull
+request is kept in `reviews.json` beside the claims, for a month or 200
+pull requests.
+
 ## When it reads
 
 Once a minute while any pull request it shows is open, half as long again
@@ -96,6 +149,14 @@ requests it holds. A host that is rate limited, or has fewer than a hundred
 calls left, is left alone until GitHub says its limit lifts, at most half
 an hour, while the other hosts go on being read. The folds with pull
 requests on that host say so while it waits.
+
+The reviews asked of you are searched on a timer of their own, one GraphQL
+call per searched host: once a minute, half as long again each time
+nothing changed, up to five minutes, and not at all while no open project
+is a repository on github.com or a host `gh` is signed in to. At once when a project
+opens and on the page's Refresh. A rate limit is the host's, so a host
+paused for one waits for both, and Refresh or Try again on the page lifts
+the pause for both.
 
 ## Hosts
 
